@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1
+#
+# Nomyx agent as a container — ideal for Unraid and other Docker hosts where the
+# OS filesystem is ephemeral (a host-installed binary wouldn't survive a reboot).
+# The agent reads its config from NOMYX_CONFIG and POSTs check results to the
+# server. It has no inbound port — it only makes outbound connections.
+#
+# Build (from the repo root, with this file in Deployables/):
+#   docker build -f Deployables/Dockerfile.agent --platform linux/amd64 \
+#     -t hollowforge/nomyx-agent:latest .
+#
+# Run on Unraid:
+#   docker run -d --name nomyx-agent \
+#     -v /mnt/user/appdata/nomyx-agent:/config \
+#     -v /var/run/docker.sock:/var/run/docker.sock:ro \
+#     -v /mnt/user:/mnt/user:ro \
+#     hollowforge/nomyx-agent:latest
+#
+# /config must contain your config.json (see the Linux check examples).
+
+# ── Build stage: bundle agent.ts into a single dependency-free agent.cjs ──────────
+FROM node:22-bookworm AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY agent.ts ./
+RUN npm run build:agent          # esbuild → dist-agent/agent.cjs (no node_modules needed at runtime)
+
+# ── Runtime stage: slim node + only the tools the default checks shell out to ─────
+FROM node:22-bookworm-slim
+WORKDIR /app
+# ca-certificates: TLS to an HTTPS server.
+# gawk: parse /proc/meminfo for the memory check.
+# curl: query the Docker socket for a running-container count (no docker CLI/daemon).
+# (Want full `docker stats`/`docker ps` checks instead? Replace the three packages
+#  below with: docker.io — but that's a much larger image.)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates gawk curl \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app/dist-agent/agent.cjs ./agent.cjs
+ENV NOMYX_CONFIG=/config/config.json
+CMD ["node", "agent.cjs"]

@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>nomyx-agent</Name>
+  <Repository>hollowforge/nomyx-agent:latest</Repository>
+  <Registry>https://hub.docker.com/r/hollowforge/nomyx-agent</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project>https://hollowforge.org</Project>
+  <Overview>Nomyx monitoring agent. Runs the checks defined in its config.json and POSTs results to a Nomyx server. Has no web UI and exposes no ports — it only makes outbound connections. To monitor this Unraid host it needs the Docker socket (container count) and a read-only mount of /mnt/user (disk usage); CPU and memory it reads from /proc automatically. Put your config.json in the mapped /config folder before starting, with serverUrl and an agent token filled in.</Overview>
+  <Category>Network:Management Tools:Other</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>Place a config.json in the mapped /config directory (serverUrl, an agent token from Nomyx Settings, and your checks). The Docker socket and /mnt/user mounts let the agent see the host's containers and disk usage.</Description>
+  <Networking>
+    <Mode>bridge</Mode>
+    <Publish/>
+  </Networking>
+  <Data>
+    <Volume>
+      <HostDir>/mnt/user/appdata/nomyx-agent</HostDir>
+      <ContainerDir>/config</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/var/run/docker.sock</HostDir>
+      <ContainerDir>/var/run/docker.sock</ContainerDir>
+      <Mode>ro</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user</HostDir>
+      <ContainerDir>/mnt/user</ContainerDir>
+      <Mode>ro</Mode>
+    </Volume>
+  </Data>
+  <Config Name="Config Folder" Target="/config" Default="/mnt/user/appdata/nomyx-agent" Mode="rw" Description="Folder holding the agent's config.json (serverUrl, token, checks)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nomyx-agent</Config>
+  <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="ro" Description="Read-only Docker socket so the agent can count running containers via the Docker API." Type="Path" Display="advanced" Required="false" Mask="false">/var/run/docker.sock</Config>
+  <Config Name="Host Shares (read-only)" Target="/mnt/user" Default="/mnt/user" Mode="ro" Description="Read-only mount of the array so the disk-usage check can see real host usage." Type="Path" Display="advanced" Required="false" Mask="false">/mnt/user</Config>
+  <Config Name="Config Path" Target="NOMYX_CONFIG" Default="/config/config.json" Mode="" Description="Path to config.json inside the container. Leave as default unless you rename the file." Type="Variable" Display="advanced" Required="false" Mask="false">/config/config.json</Config>
+</Container>

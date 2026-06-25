@@ -1,0 +1,27 @@
+# Dependencies — rebuilt inside the image
+node_modules
+
+# Build output — regenerated during the image build
+dist
+dist-agent
+
+# Checkpoint archives and backups — never belong in an image
+*.zip
+
+# Live database and its SQLite sidecars — runtime data, lives in the /data volume
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Secrets and local env
+.env
+.env.*
+
+# Editor / VCS / OS cruft
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+npm-debug.log*

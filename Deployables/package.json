@@ -1,0 +1,49 @@
+{
+  "name": "nomyx",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "client": "vite",
+    "build": "vite build",
+    "start": "tsx server.ts",
+    "agent": "tsx agent.ts",
+    "build:agent": "esbuild agent.ts --bundle --platform=node --target=node22 --outfile=dist-agent/agent.cjs",
+    "package:agent": "pkg dist-agent/agent.cjs --targets node22-linux-x64,node22-win-x64,node22-linux-arm64 --output dist-agent/nomyx-agent",
+    "agent:binaries": "npm run build:agent && npm run package:agent"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^5.2.5",
+    "@tailwindcss/vite": "^4.3.1",
+    "bcrypt": "^6.0.0",
+    "better-sqlite3": "^12.11.1",
+    "better-sqlite3-session-store": "^0.1.0",
+    "dotenv": "^17.4.2",
+    "express": "^4.18.0",
+    "express-session": "^1.19.0",
+    "ldapts": "^8.1.8",
+    "nodemailer": "^9.0.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "tailwindcss": "^4.3.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^4.17.0",
+    "@types/express-session": "^1.19.0",
+    "@types/node": "^20.19.43",
+    "@types/nodemailer": "^8.0.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@yao-pkg/pkg": "^6.3.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vite": "^8.0.16"
+  },
+  "bin": "dist-agent/agent.cjs"
+}

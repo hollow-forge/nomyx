@@ -1,0 +1,14 @@
+[Unit]
+Description=Nomyx monitoring agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/nomyx-agent
+ExecStart=/opt/nomyx-agent/nomyx-agent
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

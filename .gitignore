@@ -1,0 +1,24 @@
+node_modules/
+dist/
+dist-agent/
+agent build/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.zip
+nomyx-checkpoint-*/
+.env
+.env.*
+config_org.json
+.DS_Store
+.vscode/
+.idea/
+npm-debug.log*
+config.json
+config.agent.json
+config.pi.json
+config.json
+config.agent.json
+config.pi.json
+config.json

@@ -1,0 +1,73 @@
+{
+  "serverUrl": "http://your-server:4433",
+  "token": "PASTE_YOUR_AGENT_TOKEN_HERE",
+  "host": "pihole",
+  "group": "infrastructure",
+  "intervalSeconds": 300,
+  "checks": [
+    {
+      "name": "load",
+      "command": "cut -d' ' -f1 /proc/loadavg",
+      "unit": "",
+      "warn": 4,
+      "crit": 8,
+      "thresholdDir": "above"
+    },
+    {
+      "name": "cpu",
+      "command": "A=$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8,$5}' /proc/stat); sleep 1; B=$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8,$5}' /proc/stat); echo $A $B | awk '{print (1-($4-$2)/($3-$1))*100}'",
+      "unit": "%",
+      "warn": 80,
+      "crit": 95,
+      "thresholdDir": "above"
+    },
+    {
+      "name": "memory",
+      "command": "awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print (t-a)/t*100}' /proc/meminfo",
+      "unit": "%",
+      "warn": 80,
+      "crit": 95,
+      "thresholdDir": "above"
+    },
+    {
+      "name": "disk",
+      "command": "df --output=pcent / | tail -1 | tr -dc 0-9",
+      "unit": "%",
+      "warn": 80,
+      "crit": 90,
+      "thresholdDir": "above"
+    },
+    {
+      "name": "temperature",
+      "command": "awk '{print $1/1000}' /sys/class/thermal/thermal_zone0/temp",
+      "unit": "C",
+      "warn": 70,
+      "crit": 80,
+      "thresholdDir": "above"
+    },
+    {
+      "name": "network",
+      "command": "ping -c1 -W2 1.1.1.1 | awk -F'time=' '/time=/{print $2+0; f=1} END{if(!f) print 9999}'",
+      "unit": "ms",
+      "warn": 100,
+      "crit": 500,
+      "thresholdDir": "above"
+    },
+    {
+      "name": "pihole-FTL",
+      "command": "systemctl is-active pihole-FTL >/dev/null 2>&1 && echo 1 || echo 0",
+      "unit": "",
+      "warn": 0.5,
+      "crit": 0.5,
+      "thresholdDir": "below"
+    },
+    {
+      "name": "dns-listening",
+      "command": "ss -lntu 2>/dev/null | awk '$5 ~ /:53$/' | wc -l",
+      "unit": "",
+      "warn": 0.5,
+      "crit": 0.5,
+      "thresholdDir": "below"
+    }
+  ]
+}
