@@ -4,30 +4,12 @@ import http  from "http";
 import https from "https";
 import { execSync } from "child_process";
 import os   from "os";
+import { validateAgentConfig, type AgentConfig, type CheckConfig, type CheckValue, type MetricPayload } from "./contract";
 
 // ── Interfaces ─────────────────────────────────────────────────────────────────
-
-interface CheckConfig {
-  name:          string;
-  command:       string;
-  unit:          string;
-  warn?:         number;
-  crit?:         number;
-  thresholdDir?: string;
-}
-
-interface AgentConfig {
-  host:            string;
-  group:           string;
-  division?:       string;
-  department?:     string;
-  token?:          string;
-  serverUrl:       string;
-  intervalSeconds: number;
-  checks:          CheckConfig[];
-  caCertPath?:     string;   // trust an internal CA (recommended for self-signed / internal certs)
-  insecureTLS?:    boolean;  // skip TLS verification entirely (lab use only)
-}
+// CheckConfig / AgentConfig (and the CheckValue / MetricPayload wire shapes) now
+// live in the shared contract (contract.ts), imported above, so the agent and
+// server cannot drift apart.
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 // When running as a packaged binary (pkg), look for config.json next to the
@@ -37,10 +19,10 @@ interface AgentConfig {
 // config.json supplies its own, so the agent can run with zero config files —
 // driven entirely by environment variables.
 const DEFAULT_CHECKS: CheckConfig[] = [
-  { name: "load",       command: "cut -d' ' -f1 /proc/loadavg", unit: "", warn: 8, crit: 16 },
-  { name: "memory",     command: "awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf \"%.1f\",(t-a)/t*100}' /proc/meminfo", unit: "%", warn: 80, crit: 95 },
-  { name: "disk",       command: "df --output=pcent /mnt/user 2>/dev/null | tail -1 | tr -dc 0-9", unit: "%", warn: 80, crit: 90 },
-  { name: "containers", command: "curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json | grep -o '\"Id\"' | wc -l", unit: "" },
+  { type: "command", name: "load",       command: "cut -d' ' -f1 /proc/loadavg", unit: "", warn: 8, crit: 16 },
+  { type: "command", name: "memory",     command: "awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf \"%.1f\",(t-a)/t*100}' /proc/meminfo", unit: "%", warn: 80, crit: 95 },
+  { type: "command", name: "disk",       command: "df --output=pcent /mnt/user 2>/dev/null | tail -1 | tr -dc 0-9", unit: "%", warn: 80, crit: 90 },
+  { type: "command", name: "containers", command: "curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json | grep -o '\"Id\"' | wc -l", unit: "" },
 ];
 
 const isPackaged = !!(process as any).pkg;
@@ -160,6 +142,18 @@ if (!config.serverUrl) {
   process.exit(1);
 }
 
+// ── Validate the effective config ────────────────────────────────────────────
+// Fail loud on a malformed config.json (missing command, non-numeric threshold,
+// empty checks, …) instead of starting up and silently misreporting. This only
+// REPORTS errors and exits — it does not mutate `config`, so valid configs are
+// entirely unaffected.
+const validation = validateAgentConfig(config);
+if (!validation.success) {
+  console.error(`[nomyx-agent] invalid configuration (from ${configPath} + environment):`);
+  for (const err of validation.errors) console.error(`  - ${err}`);
+  process.exit(1);
+}
+
 // ── TLS options ──────────────────────────────────────────────────────────────────
 
 function tlsOptions(): https.RequestOptions {
@@ -216,8 +210,15 @@ function postJson(urlStr: string, body: object, token?: string): Promise<any> {
 
 // ── Collect ─────────────────────────────────────────────────────────────────────
 
-function collect(): object[] {
-  return config.checks.map(check => {
+function collect(): CheckValue[] {
+  return config.checks.map((check): CheckValue => {
+    // Phase 0 runs command checks only. Every existing config carries `command`
+    // (they predate the `type` discriminant), so guard on its presence to keep
+    // them running exactly as before. Builtin-collector dispatch is a separate,
+    // later track — a builtin check (none exist yet) reports as unknown here.
+    if (!("command" in check)) {
+      return { name: check.name, value: "error", unit: "string", status: "unknown" };
+    }
     try {
       const out   = execSync(check.command, { timeout: 10000 }).toString().trim();
       const value = isNaN(parseFloat(out)) ? out : parseFloat(out);
@@ -239,7 +240,7 @@ function collect(): object[] {
 
 async function report(): Promise<void> {
   const checks  = collect();
-  const payload = {
+  const payload: MetricPayload = {
     host:            config.host,
     group:           config.group,
     timestamp:       new Date().toISOString(),

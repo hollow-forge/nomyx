@@ -13,6 +13,7 @@ import https from "https";
 import { getAuthUrl, handleCallback } from "./entra";
 import { ldapAuthenticate, ldapLookupUser } from './ldap';
 import nodemailer from 'nodemailer';
+import type { CheckValue, Status } from "./contract";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -350,16 +351,9 @@ const insertSuppression = db.prepare(`
 
 // ── Interfaces ─────────────────────────────────────────────────────────────────
 
-interface CheckValue {
-  name:          string;
-  value:         number | string;
-  unit:          string;
-  warn?:         number;
-  crit?:         number;
-  thresholdDir?: string;
-  status?:       string;
-}
-
+// CheckValue is now imported from the shared contract (contract.ts) so the agent
+// and server share one definition. HostRecord stays server-internal — it carries
+// stored fields (group / status / lastSeen) that the inbound wire payload doesn't.
 interface HostRecord {
   hostname:    string;
   group:       string;
@@ -395,7 +389,7 @@ function hostMatchesScopes(host: any, scopes: Scope[]): boolean {
 
 // ── Threshold evaluation ───────────────────────────────────────────────────────
 
-function evaluateCheck(check: CheckValue, hostname: string): string {
+function evaluateCheck(check: CheckValue, hostname: string): Status {
   const now        = new Date().toISOString();
   const suppressed = getActiveSuppressions.get(hostname, check.name, now, now);
   if (suppressed) return "suppressed";

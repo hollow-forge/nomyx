@@ -23,6 +23,15 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Bundle agent.cjs from source (esbuild — inlines zod + shared contract.ts)
+        # Rebuild the bundle from agent.ts every run so a source change can't ship
+        # stale, and use the lockfile-pinned esbuild binary (not npx) so the bundler
+        # itself can't drift between runs of identical source.
+        run: ./node_modules/.bin/esbuild agent.ts --bundle --platform=node --target=node22 --outfile=agent.cjs
+
       - name: Build standalone binaries from agent.cjs
         # pkg cross-compiles all three targets from this single Linux runner.
         run: |
