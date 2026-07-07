@@ -31,11 +31,19 @@ const Threshold = z.coerce
 const ThresholdDir = z.enum(["above", "below"]);
 
 // ── CheckConfig ──────────────────────────────────────────────────────────────
-// Discriminated on `type`. Existing configs predate the discriminant and are all
-// command checks, so a check with no `type` is normalized to "command" before
-// validation — every current config.json stays valid. "builtin" is forward-
-// looking (a named internal collector) and not yet implemented by the agent.
+// A check is either a "command" check (an arbitrary shell command — the escape
+// hatch) or a builtin collector the agent binary implements. Both live in ONE
+// single-level union discriminated by `type`: the value is "command" or a
+// collector name ("load", "disk", "ping", …) — there is no separate `builtin`
+// field. Existing configs predate the discriminant and are all command checks, so
+// a check with no `type` is normalized to "command" — every current config.json
+// stays valid and command checks are untouched.
+//
+// IMPORTANT: builtin params are DATA handed to a collector the binary implements.
+// No param field is EVER interpolated into a shell command — that is the whole
+// point of replacing command-checks with builtins.
 
+// ── Command check (escape hatch) — shape unchanged ───────────────────────────
 const CommandCheckSchema = z.object({
   type:         z.literal("command"),
   name:         z.string().min(1),
@@ -45,25 +53,130 @@ const CommandCheckSchema = z.object({
   crit:         Threshold.optional(),
   thresholdDir: ThresholdDir.optional(),
 });
+export type CommandCheck = z.infer<typeof CommandCheckSchema>;
 
-const BuiltinCheckSchema = z.object({
-  type:         z.literal("builtin"),
+// ── Builtin collectors ───────────────────────────────────────────────────────
+// The variants below plus CommandCheckSchema form one single-level
+// z.discriminatedUnion("type", …), so Zod emits precise field-path errors
+// natively (e.g. `checks.0.params.path: Required`) instead of a generic fallback.
+//
+// Collector DATA params live under a nested `params` object so a param can safely
+// reuse a generic word: procs' `params.name` (process name) and service_active's
+// `params.unit` (systemd unit) would otherwise collide with the check's top-level
+// `name` / `unit`. A `params` whose fields are all-optional defaults to {}; a
+// `params` with required fields must be supplied (omitting it => "params:
+// Required", a present-but-incomplete params => the exact missing inner field).
+// Numeric params are coerced (configs are hand-edited). Mirrors Xymon's default
+// client + server monitor set. NOTE: no param field is EVER interpolated into a
+// shell command — collectors are implemented in the binary.
+
+// Fields shared by every builtin variant (identity + thresholds; the discriminant
+// `type` literal is set per-variant).
+const checkBaseFields = {
   name:         z.string().min(1),
-  builtin:      z.string().min(1),   // identifier of a built-in collector (future)
   unit:         z.string().default(""),
   warn:         Threshold.optional(),
   crit:         Threshold.optional(),
   thresholdDir: ThresholdDir.optional(),
+};
+
+// Client-side — local reads.
+const LoadCheckSchema = z.object({          // 1-min loadavg (/proc/loadavg). Primary cpu-pressure signal.
+  type: z.literal("load"), ...checkBaseFields,
+});
+const CpuCheckSchema = z.object({           // windowed /proc/stat delta
+  type: z.literal("cpu"), ...checkBaseFields,
+  params: z.object({
+    window_seconds: z.coerce.number().positive().default(1),
+  }).default({}),
+});
+const MemoryCheckSchema = z.object({        // physical RAM used %
+  type: z.literal("memory"), ...checkBaseFields,
+  params: z.object({
+    kind: z.enum(["physical"]).default("physical"),
+  }).default({}),
+});
+const SwapCheckSchema = z.object({          // swap used % (distinct from memory; Xymon MEMSWAP)
+  type: z.literal("swap"), ...checkBaseFields,
+});
+const DiskCheckSchema = z.object({          // mount/drive used %
+  type: z.literal("disk"), ...checkBaseFields,
+  params: z.object({ path: z.string().min(1) }),
+});
+const InodesCheckSchema = z.object({        // filesystem inode usage %
+  type: z.literal("inodes"), ...checkBaseFields,
+  params: z.object({ path: z.string().min(1) }),
+});
+const ProcsCheckSchema = z.object({         // process presence/count (Xymon PROC)
+  type: z.literal("procs"), ...checkBaseFields,
+  params: z.object({
+    name: z.string().min(1),                          // process name/pattern to match
+    min:  z.coerce.number().int().default(1),         // count below this => breach
+    max:  z.coerce.number().int().default(-1),        // -1 = unlimited
+  }),
+});
+const ServiceActiveCheckSchema = z.object({ // systemd unit active => 1/0
+  type: z.literal("service_active"), ...checkBaseFields,
+  params: z.object({ unit: z.string().min(1) }),   // down => crit; not-found/errored => "invalid"
+});
+const FileCheckSchema = z.object({          // general file check; "expiry" => cert days-remaining
+  type: z.literal("file"), ...checkBaseFields,
+  params: z.object({
+    path: z.string().min(1),
+    mode: z.enum(["expiry", "size", "age", "mtime", "exists"]),
+  }),
+});
+const TemperatureCheckSchema = z.object({   // thermal zone °C
+  type: z.literal("temperature"), ...checkBaseFields,
+  params: z.object({ zone: z.string().default("zone0") }).default({}),
+});
+const UptimeCheckSchema = z.object({        // uptime; reboot-recent / up-too-long (Xymon UP)
+  type: z.literal("uptime"), ...checkBaseFields,
 });
 
+// Server/network-side — outbound.
+const PingCheckSchema = z.object({          // ICMP RTT ms
+  type: z.literal("ping"), ...checkBaseFields,
+  params: z.object({
+    target: z.string().min(1),                        // literal IP/host, or "gateway"/"dns" sentinel (resolved in code)
+  }),
+});
+const HttpCheckSchema = z.object({          // HTTP status / latency
+  type: z.literal("http"), ...checkBaseFields,
+  params: z.object({
+    url:           z.string().url(),
+    expect_status: z.coerce.number().int().default(200),
+  }),
+});
+const PortCheckSchema = z.object({          // TCP connect check
+  type: z.literal("port"), ...checkBaseFields,
+  params: z.object({
+    host: z.string().min(1),
+    port: z.coerce.number().int().min(1).max(65535),
+  }),
+});
+
+// Existing configs predate the discriminant and are all command checks, so a
+// check with no `type` is normalized to "command" — every current config.json
+// stays valid and command checks are byte-for-byte untouched. Builtin checks name
+// their collector explicitly (type: "disk", type: "ping", …).
 export const CheckConfigSchema = z.preprocess(
   (val) =>
     val && typeof val === "object" && !("type" in (val as Record<string, unknown>))
       ? { ...(val as Record<string, unknown>), type: "command" }
       : val,
-  z.discriminatedUnion("type", [CommandCheckSchema, BuiltinCheckSchema]),
+  z.discriminatedUnion("type", [
+    CommandCheckSchema,
+    LoadCheckSchema, CpuCheckSchema, MemoryCheckSchema, SwapCheckSchema,
+    DiskCheckSchema, InodesCheckSchema, ProcsCheckSchema, ServiceActiveCheckSchema,
+    FileCheckSchema, TemperatureCheckSchema, UptimeCheckSchema,
+    PingCheckSchema, HttpCheckSchema, PortCheckSchema,
+  ]),
 );
 export type CheckConfig = z.infer<typeof CheckConfigSchema>;
+
+// All non-command variants — the collector checks — derived from the union.
+export type BuiltinCheck = Exclude<CheckConfig, CommandCheck>;
 
 // ── AgentConfig ──────────────────────────────────────────────────────────────
 // The effective config the agent runs on (file + environment + defaults merged).
