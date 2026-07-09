@@ -4,7 +4,8 @@ import http  from "http";
 import https from "https";
 import { execSync } from "child_process";
 import os   from "os";
-import { validateAgentConfig, type AgentConfig, type CheckConfig, type CheckValue, type MetricPayload } from "./contract";
+import { validateAgentConfig, type AgentConfig, type CheckConfig, type CommandCheck, type CheckValue, type MetricPayload } from "./contract";
+import { runBuiltin } from "./collectors";
 
 // ── Interfaces ─────────────────────────────────────────────────────────────────
 // CheckConfig / AgentConfig (and the CheckValue / MetricPayload wire shapes) now
@@ -212,28 +213,39 @@ function postJson(urlStr: string, body: object, token?: string): Promise<any> {
 
 function collect(): CheckValue[] {
   return config.checks.map((check): CheckValue => {
-    // Phase 0 runs command checks only. Every existing config carries `command`
-    // (they predate the `type` discriminant), so guard on its presence to keep
-    // them running exactly as before. Builtin-collector dispatch is a separate,
-    // later track — a builtin check (none exist yet) reports as unknown here.
-    if (!("command" in check)) {
-      return { name: check.name, value: "error", unit: "string", status: "unknown" };
+    // Dispatch on the CheckConfig `type` discriminant. Two subtleties:
+    //   * Legacy configs predate the discriminant (config.pihole.json's command
+    //     checks carry no `type`), and the effective `config` here is raw JSON —
+    //     validation reports but does not normalize it. So the robust test for
+    //     the command escape hatch is the presence of its defining `command`
+    //     field, which covers both `type:"command"` and legacy no-type checks.
+    //   * Everything else is a typed builtin collector → runBuiltin, which is
+    //     compile-time exhaustive over the union.
+    if ("command" in check) {
+      return runCommandCheck(check);
     }
-    try {
-      const out   = execSync(check.command, { timeout: 10000 }).toString().trim();
-      const value = isNaN(parseFloat(out)) ? out : parseFloat(out);
-      return {
-        name:         check.name,
-        value,
-        unit:         check.unit,
-        warn:         check.warn,
-        crit:         check.crit,
-        thresholdDir: check.thresholdDir ?? "above",
-      };
-    } catch {
-      return { name: check.name, value: "error", unit: "string", status: "unknown" };
-    }
+    return runBuiltin(check);
   });
+}
+
+// Command escape hatch — an arbitrary shell command via execSync. Unchanged from
+// Phase 0: run it, parse the first numeric token, else keep the raw string; a
+// failed command reports value "error" with status "unknown".
+function runCommandCheck(check: CommandCheck): CheckValue {
+  try {
+    const out   = execSync(check.command, { timeout: 10000 }).toString().trim();
+    const value = isNaN(parseFloat(out)) ? out : parseFloat(out);
+    return {
+      name:         check.name,
+      value,
+      unit:         check.unit,
+      warn:         check.warn,
+      crit:         check.crit,
+      thresholdDir: check.thresholdDir ?? "above",
+    };
+  } catch {
+    return { name: check.name, value: "error", unit: "string", status: "unknown" };
+  }
 }
 
 // ── Report ──────────────────────────────────────────────────────────────────────
