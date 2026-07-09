@@ -36,11 +36,12 @@ export function runBuiltin(check: BuiltinCheck): CheckValue {
     switch (check.type) {
       case "load":
         return numeric(check, collectLoad(check));
+      case "memory":
+        return numeric(check, collectMemory(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
       case "cpu":
-      case "memory":
       case "swap":
       case "disk":
       case "inodes":
@@ -119,4 +120,45 @@ export function parseLoadavg(raw: string): number {
     throw new Error(`collector load: unparseable /proc/loadavg (${JSON.stringify(raw)})`);
   }
   return value;
+}
+
+// ── memory ───────────────────────────────────────────────────────────────────
+// Physical RAM used %, computed from /proc/meminfo as:
+//     (MemTotal - MemAvailable) / MemTotal * 100
+// MemAvailable (not MemFree/Buffers/Cached) is used deliberately so the value
+// matches the awk formula in config.pihole.json / config.agent.json exactly —
+// migrated hosts see no dashboard shift. The raw float is returned; rounding
+// (config.agent.json's printf "%.1f") is a display concern, not source-of-truth.
+// params.kind is "physical" only per schema.
+
+function collectMemory(_check: Collector<"memory">): number {
+  if (process.platform === "win32") {
+    throw new Error("collector memory: Windows backend not yet implemented");
+  }
+  return memoryLinux();
+}
+
+function memoryLinux(): number {
+  return parseMeminfoUsedPct(fs.readFileSync("/proc/meminfo", "utf-8"));
+}
+
+// Split out from the file read so the exact parse+compute can be exercised
+// against a captured /proc/meminfo (see the live-verification harness). Each line
+// is "Key:   <value> kB"; both fields are in kB, so the unit cancels in the ratio.
+// Missing MemTotal/MemAvailable, or MemTotal <= 0, throws (fail-loud → "invalid")
+// rather than emitting NaN or a fabricated number.
+export function parseMeminfoUsedPct(raw: string): number {
+  const field = (key: string): number | undefined => {
+    const m = raw.match(new RegExp(`^${key}:\\s+(\\d+)\\s*kB`, "m"));
+    return m ? Number(m[1]) : undefined;
+  };
+  const total     = field("MemTotal");
+  const available = field("MemAvailable");
+  if (total === undefined || available === undefined) {
+    throw new Error(`collector memory: /proc/meminfo missing MemTotal/MemAvailable`);
+  }
+  if (!(total > 0)) {
+    throw new Error(`collector memory: /proc/meminfo MemTotal is ${total}`);
+  }
+  return (total - available) / total * 100;
 }
