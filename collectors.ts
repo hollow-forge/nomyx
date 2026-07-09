@@ -44,6 +44,8 @@ export function runBuiltin(check: BuiltinCheck): CheckValue {
         return numeric(check, collectDisk(check));
       case "inodes":
         return numeric(check, collectInodes(check));
+      case "uptime":
+        return numeric(check, collectUptime(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
@@ -52,7 +54,6 @@ export function runBuiltin(check: BuiltinCheck): CheckValue {
       case "service_active":
       case "file":
       case "temperature":
-      case "uptime":
       case "ping":
       case "http":
       case "port":
@@ -294,4 +295,42 @@ function inodesLinux(path: string): number {
 export function statfsInodesPct(files: number, ffree: number): number {
   if (files === 0) return 0;                 // no fixed inode table — legitimate, 0% used
   return (files - ffree) / files * 100;
+}
+
+// ── uptime ───────────────────────────────────────────────────────────────────
+// Seconds since boot — the primary reboot-recency signal (Xymon UP). Pure file
+// read of /proc/uptime, no subprocess. Emitted RAW in SECONDS: display renders it
+// human-friendly (days/hours) and config thresholds are set in seconds to match
+// the emitted unit — no hidden conversion at the source.
+//
+// The common alert is recent-reboot detection via thresholdDir:"below" (fire when
+// uptime < N seconds), which the existing single-direction threshold model handles
+// as-is. Xymon's full UP also alerts up-too-long (a second, upper bound), but that
+// needs a two-sided threshold model the schema doesn't have — a DEFERRED
+// threshold-model enhancement, not an uptime-collector concern; not handled here.
+
+function collectUptime(_check: Collector<"uptime">): number {
+  if (process.platform === "win32") {
+    throw new Error("collector uptime: Windows backend not yet implemented");
+  }
+  return uptimeLinux();
+}
+
+function uptimeLinux(): number {
+  return parseUptimeSeconds(fs.readFileSync("/proc/uptime", "utf-8"));
+}
+
+// Split out from the file read so the parse can be exercised against a captured
+// /proc/uptime line. The first whitespace-delimited field is seconds-since-boot
+// (float); an empty/unparseable field throws (→ "invalid") rather than NaN.
+export function parseUptimeSeconds(raw: string): number {
+  const first = raw.trim().split(/\s+/)[0];
+  const value = Number(first);
+  // Guard the empty field explicitly: Number("") is 0 (finite), so an empty or
+  // whitespace-only /proc/uptime would otherwise be read as "0 seconds" rather
+  // than the parse failure it is.
+  if (first === "" || !Number.isFinite(value)) {
+    throw new Error(`collector uptime: unparseable /proc/uptime (${JSON.stringify(raw)})`);
+  }
+  return value;
 }
