@@ -97,6 +97,31 @@ function assertNever(x: never): never {
   throw new Error(`unhandled collector type: ${JSON.stringify(x)}`);
 }
 
+// ── Shared parse helpers ───────────────────────────────────────────────────────
+
+// Finite-number guard shared by the single-value parsers (load, uptime,
+// temperature). Callers do their own tokenizing and hand in the already-extracted
+// token plus a ctx for the error message. The empty-string check is load-bearing:
+// Number("") === 0 is finite, so without it an empty/whitespace-only file would
+// parse as 0 rather than fail loud.
+function toFiniteNumber(token: string, ctx: string): number {
+  const value = Number(token);
+  if (token === "" || !Number.isFinite(value)) {
+    throw new Error(`collector ${ctx}: unparseable (${JSON.stringify(token)})`);
+  }
+  return value;
+}
+
+// Extract a numeric "<Key>:  <value> kB" field from /proc/meminfo. Shared by the
+// memory and swap parsers, which keep their own distinct total/zero handling — only
+// the field extractor is shared. `key` is always a hardcoded literal (MemTotal /
+// SwapTotal / …), so the interpolated regex is injection-safe; do NOT make key
+// caller/config-supplied.
+function meminfoField(raw: string, key: string): number | undefined {
+  const m = raw.match(new RegExp(`^${key}:\\s+(\\d+)\\s*kB`, "m"));
+  return m ? Number(m[1]) : undefined;
+}
+
 // ── load ─────────────────────────────────────────────────────────────────────
 // 1-minute load average — the primary cpu-pressure signal in the Xymon model.
 // Pure file read of /proc/loadavg: no sleep, no subprocess. Reported AS-IS, NOT
@@ -120,11 +145,7 @@ function loadLinux(): number {
 // average is the first whitespace-delimited field.
 export function parseLoadavg(raw: string): number {
   const first = raw.trim().split(/\s+/)[0];
-  const value = Number(first);
-  if (!Number.isFinite(value)) {
-    throw new Error(`collector load: unparseable /proc/loadavg (${JSON.stringify(raw)})`);
-  }
-  return value;
+  return toFiniteNumber(first, "load /proc/loadavg");
 }
 
 // ── memory ───────────────────────────────────────────────────────────────────
@@ -153,12 +174,8 @@ function memoryLinux(): number {
 // Missing MemTotal/MemAvailable, or MemTotal <= 0, throws (fail-loud → "invalid")
 // rather than emitting NaN or a fabricated number.
 export function parseMeminfoUsedPct(raw: string): number {
-  const field = (key: string): number | undefined => {
-    const m = raw.match(new RegExp(`^${key}:\\s+(\\d+)\\s*kB`, "m"));
-    return m ? Number(m[1]) : undefined;
-  };
-  const total     = field("MemTotal");
-  const available = field("MemAvailable");
+  const total     = meminfoField(raw, "MemTotal");
+  const available = meminfoField(raw, "MemAvailable");
   if (total === undefined || available === undefined) {
     throw new Error(`collector memory: /proc/meminfo missing MemTotal/MemAvailable`);
   }
@@ -200,12 +217,8 @@ function swapLinux(): number {
 // A genuinely malformed meminfo — SwapTotal/SwapFree fields ABSENT entirely — is a
 // real parse failure and still throws (→ "invalid"), distinct from SwapTotal==0.
 export function parseMeminfoSwapPct(raw: string): number {
-  const field = (key: string): number | undefined => {
-    const m = raw.match(new RegExp(`^${key}:\\s+(\\d+)\\s*kB`, "m"));
-    return m ? Number(m[1]) : undefined;
-  };
-  const total = field("SwapTotal");
-  const free  = field("SwapFree");
+  const total = meminfoField(raw, "SwapTotal");
+  const free  = meminfoField(raw, "SwapFree");
   if (total === undefined || free === undefined) {
     throw new Error(`collector swap: /proc/meminfo missing SwapTotal/SwapFree`);
   }
@@ -326,14 +339,7 @@ function uptimeLinux(): number {
 // (float); an empty/unparseable field throws (→ "invalid") rather than NaN.
 export function parseUptimeSeconds(raw: string): number {
   const first = raw.trim().split(/\s+/)[0];
-  const value = Number(first);
-  // Guard the empty field explicitly: Number("") is 0 (finite), so an empty or
-  // whitespace-only /proc/uptime would otherwise be read as "0 seconds" rather
-  // than the parse failure it is.
-  if (first === "" || !Number.isFinite(value)) {
-    throw new Error(`collector uptime: unparseable /proc/uptime (${JSON.stringify(raw)})`);
-  }
-  return value;
+  return toFiniteNumber(first, "uptime /proc/uptime");
 }
 
 // ── temperature ──────────────────────────────────────────────────────────────
@@ -378,10 +384,5 @@ function temperatureLinux(zone: string): number {
 // /sys temp value. Empty/unparseable content throws (→ "invalid") rather than
 // emitting 0°C (Number("") is 0, a plausible-wrong reading).
 export function parseMilliCelsius(raw: string): number {
-  const trimmed = raw.trim();
-  const milli   = Number(trimmed);
-  if (trimmed === "" || !Number.isFinite(milli)) {
-    throw new Error(`collector temperature: unparseable temp (${JSON.stringify(raw)})`);
-  }
-  return milli / 1000;
+  return toFiniteNumber(raw.trim(), "temperature temp") / 1000;
 }
