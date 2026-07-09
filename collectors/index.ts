@@ -42,23 +42,28 @@ export {
 // default. runBuiltin catches any throw and converts it to an "invalid"
 // CheckValue so one broken collector can't take down the whole report.
 
-export function runBuiltin(check: BuiltinCheck): CheckValue {
+// Async so genuinely-async collectors (cpu windowing, network I/O — later tiers)
+// fit the same dispatch. The 7 file-read collectors stay synchronous internally
+// (plain fs.readFileSync); awaiting a sync call is harmless, so no gratuitous async
+// is pushed down into them. The try/catch wraps the awaited call so a throw from a
+// sync OR async collector alike becomes a status:"invalid" CheckValue.
+export async function runBuiltin(check: BuiltinCheck): Promise<CheckValue> {
   try {
     switch (check.type) {
       case "load":
-        return numeric(check, collectLoad(check));
+        return numeric(check, await collectLoad(check));
       case "memory":
-        return numeric(check, collectMemory(check));
+        return numeric(check, await collectMemory(check));
       case "swap":
-        return numeric(check, collectSwap(check));
+        return numeric(check, await collectSwap(check));
       case "disk":
-        return numeric(check, collectDisk(check));
+        return numeric(check, await collectDisk(check));
       case "inodes":
-        return numeric(check, collectInodes(check));
+        return numeric(check, await collectInodes(check));
       case "uptime":
-        return numeric(check, collectUptime(check));
+        return numeric(check, await collectUptime(check));
       case "temperature":
-        return numeric(check, collectTemperature(check));
+        return numeric(check, await collectTemperature(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.

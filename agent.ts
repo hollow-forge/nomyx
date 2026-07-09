@@ -211,8 +211,12 @@ function postJson(urlStr: string, body: object, token?: string): Promise<any> {
 
 // ── Collect ─────────────────────────────────────────────────────────────────────
 
-function collect(): CheckValue[] {
-  return config.checks.map((check): CheckValue => {
+// Async because the builtin dispatch (runBuiltin) is now async — the file-read
+// collectors resolve immediately, but genuinely-async collectors (cpu/network,
+// later) fit the same path. Promise.all runs the checks concurrently and preserves
+// input order, so the emitted CheckValue[] is identical to the previous sync map.
+async function collect(): Promise<CheckValue[]> {
+  return Promise.all(config.checks.map(async (check): Promise<CheckValue> => {
     // Dispatch on the CheckConfig `type` discriminant. Two subtleties:
     //   * Legacy configs predate the discriminant (config.pihole.json's command
     //     checks carry no `type`), and the effective `config` here is raw JSON —
@@ -222,10 +226,10 @@ function collect(): CheckValue[] {
     //   * Everything else is a typed builtin collector → runBuiltin, which is
     //     compile-time exhaustive over the union.
     if ("command" in check) {
-      return runCommandCheck(check);
+      return runCommandCheck(check);          // execSync stays synchronous-blocking; awaited harmlessly
     }
     return runBuiltin(check);
-  });
+  }));
 }
 
 // Command escape hatch — an arbitrary shell command via execSync. Unchanged from
@@ -251,7 +255,7 @@ function runCommandCheck(check: CommandCheck): CheckValue {
 // ── Report ──────────────────────────────────────────────────────────────────────
 
 async function report(): Promise<void> {
-  const checks  = collect();
+  const checks  = await collect();
   const payload: MetricPayload = {
     host:            config.host,
     group:           config.group,
