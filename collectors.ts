@@ -38,11 +38,12 @@ export function runBuiltin(check: BuiltinCheck): CheckValue {
         return numeric(check, collectLoad(check));
       case "memory":
         return numeric(check, collectMemory(check));
+      case "swap":
+        return numeric(check, collectSwap(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
       case "cpu":
-      case "swap":
       case "disk":
       case "inodes":
       case "procs":
@@ -161,4 +162,49 @@ export function parseMeminfoUsedPct(raw: string): number {
     throw new Error(`collector memory: /proc/meminfo MemTotal is ${total}`);
   }
   return (total - available) / total * 100;
+}
+
+// ── swap ─────────────────────────────────────────────────────────────────────
+// Swap used %, computed from /proc/meminfo as:
+//     (SwapTotal - SwapFree) / SwapTotal * 100
+// A NEW capability (Xymon MEMSWAP parity) — no legacy config has a swap check, so
+// this is not a migration. Distinct from `memory` (physical RAM); swap pressure is
+// its own signal.
+
+function collectSwap(_check: Collector<"swap">): number {
+  if (process.platform === "win32") {
+    throw new Error("collector swap: Windows backend not yet implemented");
+  }
+  return swapLinux();
+}
+
+function swapLinux(): number {
+  return parseMeminfoSwapPct(fs.readFileSync("/proc/meminfo", "utf-8"));
+}
+
+// Split out from the file read so the compute can be exercised against a captured
+// /proc/meminfo. Zero-handling DELIBERATELY DIFFERS from parseMeminfoUsedPct:
+//
+//   SwapTotal == 0 is a LEGITIMATE state — the host simply has no swap configured
+//   (common on Pis/containers) — NOT a parse error. No swap means no swap pressure
+//   to alert on, so we emit 0% used (which is OK and never trips an "above"
+//   threshold). We must NOT throw or return "invalid" here, or every swapless host
+//   would false-alarm. (memory's MemTotal==0 throws because a machine with zero
+//   physical RAM is impossible → genuinely malformed meminfo.) Do not "fix" this
+//   into a throw.
+//
+// A genuinely malformed meminfo — SwapTotal/SwapFree fields ABSENT entirely — is a
+// real parse failure and still throws (→ "invalid"), distinct from SwapTotal==0.
+export function parseMeminfoSwapPct(raw: string): number {
+  const field = (key: string): number | undefined => {
+    const m = raw.match(new RegExp(`^${key}:\\s+(\\d+)\\s*kB`, "m"));
+    return m ? Number(m[1]) : undefined;
+  };
+  const total = field("SwapTotal");
+  const free  = field("SwapFree");
+  if (total === undefined || free === undefined) {
+    throw new Error(`collector swap: /proc/meminfo missing SwapTotal/SwapFree`);
+  }
+  if (total === 0) return 0;                 // no swap configured — legitimate, 0% used
+  return (total - free) / total * 100;
 }
