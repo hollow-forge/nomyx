@@ -40,11 +40,12 @@ export function runBuiltin(check: BuiltinCheck): CheckValue {
         return numeric(check, collectMemory(check));
       case "swap":
         return numeric(check, collectSwap(check));
+      case "disk":
+        return numeric(check, collectDisk(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
       case "cpu":
-      case "disk":
       case "inodes":
       case "procs":
       case "service_active":
@@ -207,4 +208,54 @@ export function parseMeminfoSwapPct(raw: string): number {
   }
   if (total === 0) return 0;                 // no swap configured — legitimate, 0% used
   return (total - free) / total * 100;
+}
+
+// ── disk ─────────────────────────────────────────────────────────────────────
+// Filesystem used %, from the statfs syscall via fs.statfsSync — NO subprocess.
+// First parameterized collector (params.path) and first migration collector
+// (config.pi.json / config.pihole.json / config.agent.json have real df checks).
+//
+// BACKEND: native fs.statfsSync (Node 22, and the agent ships a bundled Node 22
+// runtime so it is present on the Pi even though the Pi has no system node). This
+// is structurally identical to the /proc collectors — a syscall, no shell, so
+// params.path is passed as pure DATA to statfs and never touches a command line.
+//
+// FORMULA matches `df -P` exactly (its "used% of space available to unprivileged
+// users" convention), so migrated hosts report the same number:
+//     used  = blocks - bfree      (total minus all free, i.e. reserved counts as used)
+//     avail = bavail              (free blocks available to unprivileged users)
+//     pct   = used / (used + avail) * 100
+// df then rounds this UP to an integer; we emit the raw float (rounding is a
+// display concern). Reserved blocks (bfree - bavail) are EXCLUDED from the
+// denominator — that is the reserved-block handling df uses; the naive
+// (blocks - bavail) / blocks overstates usage and must not be used.
+//
+// A path that does not exist / is not a mount makes statfsSync throw (ENOENT),
+// which surfaces as status "invalid" — a typo'd path fails loud, never silently
+// reports 0 or another filesystem's numbers.
+
+function collectDisk(check: Collector<"disk">): number {
+  if (process.platform === "win32") {
+    throw new Error("collector disk: Windows backend not yet implemented");
+  }
+  return diskLinux(check.params.path);
+}
+
+function diskLinux(path: string): number {
+  const s = fs.statfsSync(path);             // throws ENOENT on a nonexistent path
+  return statfsUsedPct(s.blocks, s.bfree, s.bavail);
+}
+
+// Split out so the df-matching arithmetic can be exercised against captured statfs
+// numbers (e.g. `stat -f` on the Pi, which exposes the same syscall's fields).
+// A filesystem with no usable capacity (used + avail == 0, e.g. a pseudo-fs)
+// would divide by zero; guard it as fail-loud rather than emitting NaN.
+export function statfsUsedPct(blocks: number, bfree: number, bavail: number): number {
+  const used  = blocks - bfree;
+  const avail = bavail;
+  const denom = used + avail;
+  if (!(denom > 0)) {
+    throw new Error(`collector disk: filesystem has no usable capacity (blocks=${blocks}, bfree=${bfree}, bavail=${bavail})`);
+  }
+  return used / denom * 100;
 }
