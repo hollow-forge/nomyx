@@ -5,9 +5,10 @@
 // config/report plumbing. Narrow-module discipline: everything here is about
 // turning a validated BuiltinCheck into a CheckValue — nothing else.
 //
-// Layout (one-directional imports — index → fileread → shared → contract):
+// Layout (one-directional imports — index → {fileread,cpu} → shared → contract):
 //   index.ts     — this file: the exhaustive dispatch + CheckValue builders
 //   fileread.ts  — the 7 no-subprocess collectors (/proc, /sys, statfs)
+//   cpu.ts       — the windowed /proc/stat-delta collector (genuinely async)
 //   shared.ts    — leaf helpers (Collector<T>, toFiniteNumber, meminfoField)
 //
 // Two invariants hold across every collector:
@@ -23,6 +24,7 @@ import {
   collectLoad, collectMemory, collectSwap, collectDisk,
   collectInodes, collectUptime, collectTemperature,
 } from "./fileread";
+import { collectCpu } from "./cpu";
 
 // Re-export the pure parse/compute functions so consumers (agent.ts and the
 // verification harnesses) keep importing them from "./collectors" unchanged after
@@ -31,6 +33,7 @@ export {
   parseLoadavg, parseMeminfoUsedPct, parseMeminfoSwapPct,
   parseUptimeSeconds, parseMilliCelsius, statfsUsedPct, statfsInodesPct,
 } from "./fileread";
+export { parseStatCpu, cpuPctFromDeltas } from "./cpu";
 
 // ── Dispatch ───────────────────────────────────────────────────────────────────
 // Exhaustive over the builtin union: every collector `type` is handled, and the
@@ -64,10 +67,13 @@ export async function runBuiltin(check: BuiltinCheck): Promise<CheckValue> {
         return numeric(check, await collectUptime(check));
       case "temperature":
         return numeric(check, await collectTemperature(check));
+      case "cpu":
+        // Windowed: awaits params.window_seconds between two /proc/stat reads, so
+        // this branch takes ~window_seconds to resolve (by design).
+        return numeric(check, await collectCpu(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
-      case "cpu":
       case "procs":
       case "service_active":
       case "file":
