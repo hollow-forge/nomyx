@@ -46,6 +46,8 @@ export function runBuiltin(check: BuiltinCheck): CheckValue {
         return numeric(check, collectInodes(check));
       case "uptime":
         return numeric(check, collectUptime(check));
+      case "temperature":
+        return numeric(check, collectTemperature(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
@@ -53,7 +55,6 @@ export function runBuiltin(check: BuiltinCheck): CheckValue {
       case "procs":
       case "service_active":
       case "file":
-      case "temperature":
       case "ping":
       case "http":
       case "port":
@@ -333,4 +334,54 @@ export function parseUptimeSeconds(raw: string): number {
     throw new Error(`collector uptime: unparseable /proc/uptime (${JSON.stringify(raw)})`);
   }
   return value;
+}
+
+// ── temperature ──────────────────────────────────────────────────────────────
+// Thermal-zone temperature in °C (Xymon-style). Pure file read of
+// /sys/class/thermal/thermal_<zone>/temp, no subprocess. params.zone (default
+// "zone0" per schema) selects the zone; on this Pi zone0 is type "cpu-thermal".
+//
+// params.zone is DATA used to build a /sys path, so it is constrained to an
+// allowlist — letters/digits/underscore/hyphen only (^[A-Za-z0-9_-]+$). This
+// blocks path traversal by construction: "/" and "." are rejected, so neither
+// "../../etc/hostname" nor "zone0/../.." can escape the thermal dir. A malformed
+// zone fails loud (→ "invalid") rather than reading an attacker-chosen file.
+//
+// /sys/.../temp reports MILLIDEGREES C; divide by 1000 → °C. This /1000 is an
+// AT-SOURCE conversion on purpose: millidegrees is a kernel encoding quirk, not a
+// unit anyone thresholds in (configs use warn:70 meaning 70°C), and it matches the
+// old awk '{print $1/1000}' in config.pihole.json so migrated thresholds are
+// unchanged. (Contrast uptime, which stays raw because seconds IS the threshold
+// unit — here millidegrees is not.)
+//
+// A nonexistent zone, or /sys/class/thermal absent entirely (some VMs have no
+// thermal hardware), makes the read throw → clean "invalid", never a crash.
+
+const ZONE_RE = /^[A-Za-z0-9_-]+$/;
+
+function collectTemperature(check: Collector<"temperature">): number {
+  if (process.platform === "win32") {
+    throw new Error("collector temperature: Windows backend not yet implemented");
+  }
+  return temperatureLinux(check.params.zone);
+}
+
+function temperatureLinux(zone: string): number {
+  if (!ZONE_RE.test(zone)) {
+    throw new Error(`collector temperature: invalid zone ${JSON.stringify(zone)} (expected e.g. "zone0")`);
+  }
+  const raw = fs.readFileSync(`/sys/class/thermal/thermal_${zone}/temp`, "utf-8");
+  return parseMilliCelsius(raw);
+}
+
+// Split out so the millidegrees→°C conversion can be exercised against a captured
+// /sys temp value. Empty/unparseable content throws (→ "invalid") rather than
+// emitting 0°C (Number("") is 0, a plausible-wrong reading).
+export function parseMilliCelsius(raw: string): number {
+  const trimmed = raw.trim();
+  const milli   = Number(trimmed);
+  if (trimmed === "" || !Number.isFinite(milli)) {
+    throw new Error(`collector temperature: unparseable temp (${JSON.stringify(raw)})`);
+  }
+  return milli / 1000;
 }
