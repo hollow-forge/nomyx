@@ -42,11 +42,12 @@ export function runBuiltin(check: BuiltinCheck): CheckValue {
         return numeric(check, collectSwap(check));
       case "disk":
         return numeric(check, collectDisk(check));
+      case "inodes":
+        return numeric(check, collectInodes(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
       case "cpu":
-      case "inodes":
       case "procs":
       case "service_active":
       case "file":
@@ -258,4 +259,39 @@ export function statfsUsedPct(blocks: number, bfree: number, bavail: number): nu
     throw new Error(`collector disk: filesystem has no usable capacity (blocks=${blocks}, bfree=${bfree}, bavail=${bavail})`);
   }
   return used / denom * 100;
+}
+
+// ── inodes ───────────────────────────────────────────────────────────────────
+// Filesystem inode-table used %, from the SAME statfs syscall as disk (native
+// fs.statfsSync, no subprocess) but different fields: `files` (total inodes) and
+// `ffree` (free inodes). NEW capability (Xymon INODE parity) — no legacy config
+// has an inode check, so not a migration. No reserved-block subtlety here; that's
+// a space-only df convention, inodes don't have it:
+//     used% = (files - ffree) / files * 100
+
+function collectInodes(check: Collector<"inodes">): number {
+  if (process.platform === "win32") {
+    throw new Error("collector inodes: Windows backend not yet implemented");
+  }
+  return inodesLinux(check.params.path);
+}
+
+function inodesLinux(path: string): number {
+  const s = fs.statfsSync(path);             // throws ENOENT on a nonexistent path
+  return statfsInodesPct(s.files, s.ffree);
+}
+
+// Split out so the compute can be exercised against captured statfs numbers
+// (`stat -f` on the Pi exposes the same syscall's fields).
+//
+// ZERO-INODE handling DELIBERATELY MIRRORS swap, NOT disk: files == 0 means the
+// filesystem has NO fixed inode table (btrfs allocates inodes dynamically; many
+// overlay/network/pseudo-filesystems report 0). Such a filesystem CANNOT run out
+// of inodes, so there is no inode pressure to alert on — emit 0% used (OK, never
+// trips an "above" threshold). We must NOT throw or return "invalid", or every
+// btrfs/overlay host would false-alarm. (Contrast disk: a bad path is a genuine
+// error and throws.) Do not "fix" this into a throw.
+export function statfsInodesPct(files: number, ffree: number): number {
+  if (files === 0) return 0;                 // no fixed inode table — legitimate, 0% used
+  return (files - ffree) / files * 100;
 }
