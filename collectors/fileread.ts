@@ -1,126 +1,18 @@
-// ── Builtin collectors ────────────────────────────────────────────────────────
-// The agent is replacing command-string checks with builtin collectors that read
-// the OS directly (no shell). This module owns the builtin dispatch and the
-// per-collector implementations; agent.ts keeps the command escape hatch and the
-// config/report plumbing. Narrow-module discipline: everything here is about
-// turning a validated BuiltinCheck into a CheckValue — nothing else.
+// ── File-read collectors ───────────────────────────────────────────────────────
+// The 7 collectors that read the OS directly with no subprocess — /proc, /sys, and
+// the statfs syscall: load, memory, swap, disk, inodes, uptime, temperature. Each
+// follows the same shape:
+//   collectX(check)  — selects the platform backend (Linux impl / Windows throws)
+//   xLinux()         — does the Linux read
+//   parseX(raw)      — the pure parse/compute, split out so it can be exercised
+//                      against captured input by the verification harnesses.
 //
-// Two invariants hold across every collector:
-//   1. OS-BACKEND SEAM — each collector selects its platform backend internally.
-//      Linux is implemented; the Windows branch throws a clear "not yet
-//      implemented" error rather than emitting a stub number, so a Windows host
-//      never reports a plausible-wrong value.
-//   2. FAIL-LOUD — a collector that cannot produce a real finite number throws;
-//      runBuiltin catches and returns a status:"invalid" CheckValue. A non-value
-//      is never silently coerced to "ok" or to a fabricated reading.
+// The OS-BACKEND SEAM (Linux impl / Windows throws) is applied per collector below;
+// the FAIL-LOUD invariant (throw → "invalid", never a fabricated number) is enforced
+// by the dispatch in ./index catching whatever these throw.
 
 import fs from "fs";
-import type { BuiltinCheck, CheckValue } from "./contract";
-
-// Narrow a BuiltinCheck to a single collector variant by its `type` discriminant,
-// so a per-collector function receives exactly its own params shape.
-type Collector<T extends BuiltinCheck["type"]> = Extract<BuiltinCheck, { type: T }>;
-
-// ── Dispatch ───────────────────────────────────────────────────────────────────
-// Exhaustive over the builtin union: every collector `type` is handled, and the
-// `assertNever` default makes TS raise a COMPILE error if a new collector type is
-// added to the union in contract.ts without a branch here — a new collector
-// cannot silently no-op. `load` is implemented this step; the remaining
-// recognized types are wired to a fail-loud "not yet implemented" placeholder
-// (surfaces as status "invalid"), distinct from the unreachable schema-drift
-// default. runBuiltin catches any throw and converts it to an "invalid"
-// CheckValue so one broken collector can't take down the whole report.
-
-export function runBuiltin(check: BuiltinCheck): CheckValue {
-  try {
-    switch (check.type) {
-      case "load":
-        return numeric(check, collectLoad(check));
-      case "memory":
-        return numeric(check, collectMemory(check));
-      case "swap":
-        return numeric(check, collectSwap(check));
-      case "disk":
-        return numeric(check, collectDisk(check));
-      case "inodes":
-        return numeric(check, collectInodes(check));
-      case "uptime":
-        return numeric(check, collectUptime(check));
-      case "temperature":
-        return numeric(check, collectTemperature(check));
-
-      // Recognized collectors, not built yet — they follow one at a time. Fail
-      // loud (never a stub number) until each is implemented.
-      case "cpu":
-      case "procs":
-      case "service_active":
-      case "file":
-      case "ping":
-      case "http":
-      case "port":
-        throw new Error(`collector ${check.type}: not yet implemented`);
-
-      default:
-        // Unreachable for the known union. If contract.ts grows a new collector
-        // type, `check` is no longer `never` here and this line fails to compile.
-        return assertNever(check);
-    }
-  } catch (err) {
-    return invalid(check, err instanceof Error ? err.message : String(err));
-  }
-}
-
-// ── CheckValue builders ──────────────────────────────────────────────────────
-
-// A real numeric reading. Mirrors the command path exactly so the server's
-// evaluateCheck thresholds it identically: same unit, warn, crit, and the
-// thresholdDir default of "above".
-function numeric(check: BuiltinCheck, value: number): CheckValue {
-  return {
-    name:         check.name,
-    value,
-    unit:         check.unit,
-    warn:         check.warn,
-    crit:         check.crit,
-    thresholdDir: check.thresholdDir ?? "above",
-  };
-}
-
-// A fail-loud non-value: never a number, never "ok". Carries the reason as the
-// value so it is visible in the UI/history. Mirrors the command path's error
-// shape (text value, unit "string") but with the Phase-0 "invalid" status.
-function invalid(check: BuiltinCheck, reason: string): CheckValue {
-  return { name: check.name, value: `error: ${reason}`, unit: "string", status: "invalid" };
-}
-
-function assertNever(x: never): never {
-  throw new Error(`unhandled collector type: ${JSON.stringify(x)}`);
-}
-
-// ── Shared parse helpers ───────────────────────────────────────────────────────
-
-// Finite-number guard shared by the single-value parsers (load, uptime,
-// temperature). Callers do their own tokenizing and hand in the already-extracted
-// token plus a ctx for the error message. The empty-string check is load-bearing:
-// Number("") === 0 is finite, so without it an empty/whitespace-only file would
-// parse as 0 rather than fail loud.
-function toFiniteNumber(token: string, ctx: string): number {
-  const value = Number(token);
-  if (token === "" || !Number.isFinite(value)) {
-    throw new Error(`collector ${ctx}: unparseable (${JSON.stringify(token)})`);
-  }
-  return value;
-}
-
-// Extract a numeric "<Key>:  <value> kB" field from /proc/meminfo. Shared by the
-// memory and swap parsers, which keep their own distinct total/zero handling — only
-// the field extractor is shared. `key` is always a hardcoded literal (MemTotal /
-// SwapTotal / …), so the interpolated regex is injection-safe; do NOT make key
-// caller/config-supplied.
-function meminfoField(raw: string, key: string): number | undefined {
-  const m = raw.match(new RegExp(`^${key}:\\s+(\\d+)\\s*kB`, "m"));
-  return m ? Number(m[1]) : undefined;
-}
+import { toFiniteNumber, meminfoField, type Collector } from "./shared";
 
 // ── load ─────────────────────────────────────────────────────────────────────
 // 1-minute load average — the primary cpu-pressure signal in the Xymon model.
@@ -129,7 +21,7 @@ function meminfoField(raw: string, key: string): number | undefined {
 //     cut -d' ' -f1 /proc/loadavg
 // so a 4-core Pi sitting at load 2.0 still reports 2.0, exactly as before.
 
-function collectLoad(_check: Collector<"load">): number {
+export function collectLoad(_check: Collector<"load">): number {
   if (process.platform === "win32") {
     throw new Error("collector load: Windows backend not yet implemented");
   }
@@ -157,7 +49,7 @@ export function parseLoadavg(raw: string): number {
 // (config.agent.json's printf "%.1f") is a display concern, not source-of-truth.
 // params.kind is "physical" only per schema.
 
-function collectMemory(_check: Collector<"memory">): number {
+export function collectMemory(_check: Collector<"memory">): number {
   if (process.platform === "win32") {
     throw new Error("collector memory: Windows backend not yet implemented");
   }
@@ -192,7 +84,7 @@ export function parseMeminfoUsedPct(raw: string): number {
 // this is not a migration. Distinct from `memory` (physical RAM); swap pressure is
 // its own signal.
 
-function collectSwap(_check: Collector<"swap">): number {
+export function collectSwap(_check: Collector<"swap">): number {
   if (process.platform === "win32") {
     throw new Error("collector swap: Windows backend not yet implemented");
   }
@@ -250,7 +142,7 @@ export function parseMeminfoSwapPct(raw: string): number {
 // which surfaces as status "invalid" — a typo'd path fails loud, never silently
 // reports 0 or another filesystem's numbers.
 
-function collectDisk(check: Collector<"disk">): number {
+export function collectDisk(check: Collector<"disk">): number {
   if (process.platform === "win32") {
     throw new Error("collector disk: Windows backend not yet implemented");
   }
@@ -284,7 +176,7 @@ export function statfsUsedPct(blocks: number, bfree: number, bavail: number): nu
 // a space-only df convention, inodes don't have it:
 //     used% = (files - ffree) / files * 100
 
-function collectInodes(check: Collector<"inodes">): number {
+export function collectInodes(check: Collector<"inodes">): number {
   if (process.platform === "win32") {
     throw new Error("collector inodes: Windows backend not yet implemented");
   }
@@ -323,7 +215,7 @@ export function statfsInodesPct(files: number, ffree: number): number {
 // needs a two-sided threshold model the schema doesn't have — a DEFERRED
 // threshold-model enhancement, not an uptime-collector concern; not handled here.
 
-function collectUptime(_check: Collector<"uptime">): number {
+export function collectUptime(_check: Collector<"uptime">): number {
   if (process.platform === "win32") {
     throw new Error("collector uptime: Windows backend not yet implemented");
   }
@@ -365,7 +257,7 @@ export function parseUptimeSeconds(raw: string): number {
 
 const ZONE_RE = /^[A-Za-z0-9_-]+$/;
 
-function collectTemperature(check: Collector<"temperature">): number {
+export function collectTemperature(check: Collector<"temperature">): number {
   if (process.platform === "win32") {
     throw new Error("collector temperature: Windows backend not yet implemented");
   }
