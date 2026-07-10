@@ -5,11 +5,12 @@
 // config/report plumbing. Narrow-module discipline: everything here is about
 // turning a validated BuiltinCheck into a CheckValue — nothing else.
 //
-// Layout (one-directional imports — index → {fileread,cpu} → shared → contract):
-//   index.ts     — this file: the exhaustive dispatch + CheckValue builders
-//   fileread.ts  — the 7 no-subprocess collectors (/proc, /sys, statfs)
-//   cpu.ts       — the windowed /proc/stat-delta collector (genuinely async)
-//   shared.ts    — leaf helpers (Collector<T>, toFiniteNumber, meminfoField)
+// Layout (one-directional imports — index → {fileread,cpu,subprocess} → shared → contract):
+//   index.ts       — this file: the exhaustive dispatch + CheckValue builders
+//   fileread.ts    — the 7 no-subprocess collectors (/proc, /sys, statfs)
+//   cpu.ts         — the windowed /proc/stat-delta collector (genuinely async)
+//   subprocess.ts  — collectors that spawn a fixed-argv tool (execFile, never a shell)
+//   shared.ts      — leaf helpers (Collector<T>, toFiniteNumber, meminfoField)
 //
 // Two invariants hold across every collector:
 //   1. OS-BACKEND SEAM — each collector selects its platform backend internally
@@ -25,6 +26,7 @@ import {
   collectInodes, collectUptime, collectTemperature,
 } from "./fileread";
 import { collectCpu } from "./cpu";
+import { collectServiceActive } from "./subprocess";
 
 // Re-export the pure parse/compute functions so consumers (agent.ts and the
 // verification harnesses) keep importing them from "./collectors" unchanged after
@@ -34,6 +36,7 @@ export {
   parseUptimeSeconds, parseMilliCelsius, statfsUsedPct, statfsInodesPct,
 } from "./fileread";
 export { parseStatCpu, cpuPctFromDeltas } from "./cpu";
+export { interpretIsActive } from "./subprocess";
 
 // ── Dispatch ───────────────────────────────────────────────────────────────────
 // Exhaustive over the builtin union: every collector `type` is handled, and the
@@ -71,11 +74,14 @@ export async function runBuiltin(check: BuiltinCheck): Promise<CheckValue> {
         // Windowed: awaits params.window_seconds between two /proc/stat reads, so
         // this branch takes ~window_seconds to resolve (by design).
         return numeric(check, await collectCpu(check));
+      case "service_active":
+        // execFile('systemctl', ['is-active', unit]) — 1 active / 0 down; a check
+        // that cannot be determined throws → "invalid" (see subprocess.ts).
+        return numeric(check, await collectServiceActive(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
       case "procs":
-      case "service_active":
       case "file":
       case "ping":
       case "http":
