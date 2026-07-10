@@ -394,7 +394,15 @@ function evaluateCheck(check: CheckValue, hostname: string): Status {
   const suppressed = getActiveSuppressions.get(hostname, check.name, now, now);
   if (suppressed) return "suppressed";
 
-  if (typeof check.value !== "number") return "ok";
+  // Honor the collector's fail-loud signal: "invalid" means the agent could not
+  // measure a real value ("couldn't check"), which the server cannot infer from the
+  // value alone. Suppression still wins (above); everything else is recomputed below.
+  if (check.status === "invalid") return "invalid";
+
+  // A non-numeric value that arrives WITHOUT an invalid status is still not healthy —
+  // fault backstop: it becomes "invalid", never "ok". (Phase-0 bug: this returned "ok",
+  // flattening unmeasurable checks to green.)
+  if (typeof check.value !== "number") return "invalid";
   if (check.warn === undefined || check.crit === undefined) return "ok";
 
   if (check.thresholdDir === "below") {
@@ -1007,8 +1015,11 @@ app.post("/api/status", (req, res) => {
 
   const worstStatus = evaluated.reduce((worst: string, check: CheckValue) => {
     if (check.status === "crit") return "crit";
-    if (check.status === "warn"       && worst !== "crit") return "warn";
-    if (check.status === "suppressed" && worst !== "crit" && worst !== "warn") return "suppressed";
+    // invalid escalates the host, ranked just below crit and above warn — so an
+    // unmeasurable check is never swallowed to ok, but a real crit still wins.
+    if (check.status === "invalid"    && worst !== "crit") return "invalid";
+    if (check.status === "warn"       && worst !== "crit" && worst !== "invalid") return "warn";
+    if (check.status === "suppressed" && worst !== "crit" && worst !== "invalid" && worst !== "warn") return "suppressed";
     return worst;
   }, "ok");
 
@@ -1346,7 +1357,7 @@ function runRollup(): number {
   const rawToRoll = db.prepare(`
     SELECT hostname, checkName, unit,
       strftime('%s', recordedAt) / 300 AS bucket,
-      CASE MAX(CASE status WHEN 'crit' THEN 5 WHEN 'warn' THEN 4 WHEN 'unknown' THEN 3 WHEN 'suppressed' THEN 2 WHEN 'ok' THEN 1 ELSE 3 END) WHEN 5 THEN 'crit' WHEN 4 THEN 'warn' WHEN 3 THEN 'unknown' WHEN 2 THEN 'suppressed' ELSE 'ok' END AS status,
+      CASE MAX(CASE status WHEN 'crit' THEN 6 WHEN 'invalid' THEN 5 WHEN 'warn' THEN 4 WHEN 'unknown' THEN 3 WHEN 'suppressed' THEN 2 WHEN 'ok' THEN 1 ELSE 3 END) WHEN 6 THEN 'crit' WHEN 5 THEN 'invalid' WHEN 4 THEN 'warn' WHEN 3 THEN 'unknown' WHEN 2 THEN 'suppressed' ELSE 'ok' END AS status,
       ROUND(AVG(value), 2) AS value,
       MIN(recordedAt) AS recordedAt
     FROM check_history
@@ -1374,7 +1385,7 @@ function runRollup(): number {
   const fiveToRoll = db.prepare(`
     SELECT hostname, checkName, unit,
       strftime('%s', recordedAt) / 3600 AS bucket,
-      CASE MAX(CASE status WHEN 'crit' THEN 5 WHEN 'warn' THEN 4 WHEN 'unknown' THEN 3 WHEN 'suppressed' THEN 2 WHEN 'ok' THEN 1 ELSE 3 END) WHEN 5 THEN 'crit' WHEN 4 THEN 'warn' WHEN 3 THEN 'unknown' WHEN 2 THEN 'suppressed' ELSE 'ok' END AS status,
+      CASE MAX(CASE status WHEN 'crit' THEN 6 WHEN 'invalid' THEN 5 WHEN 'warn' THEN 4 WHEN 'unknown' THEN 3 WHEN 'suppressed' THEN 2 WHEN 'ok' THEN 1 ELSE 3 END) WHEN 6 THEN 'crit' WHEN 5 THEN 'invalid' WHEN 4 THEN 'warn' WHEN 3 THEN 'unknown' WHEN 2 THEN 'suppressed' ELSE 'ok' END AS status,
       ROUND(AVG(value), 2) AS value,
       MIN(recordedAt) AS recordedAt
     FROM check_history
@@ -1402,7 +1413,7 @@ function runRollup(): number {
   const hourlyToRoll = db.prepare(`
     SELECT hostname, checkName, unit,
       strftime('%s', recordedAt) / 86400 AS bucket,
-      CASE MAX(CASE status WHEN 'crit' THEN 5 WHEN 'warn' THEN 4 WHEN 'unknown' THEN 3 WHEN 'suppressed' THEN 2 WHEN 'ok' THEN 1 ELSE 3 END) WHEN 5 THEN 'crit' WHEN 4 THEN 'warn' WHEN 3 THEN 'unknown' WHEN 2 THEN 'suppressed' ELSE 'ok' END AS status,
+      CASE MAX(CASE status WHEN 'crit' THEN 6 WHEN 'invalid' THEN 5 WHEN 'warn' THEN 4 WHEN 'unknown' THEN 3 WHEN 'suppressed' THEN 2 WHEN 'ok' THEN 1 ELSE 3 END) WHEN 6 THEN 'crit' WHEN 5 THEN 'invalid' WHEN 4 THEN 'warn' WHEN 3 THEN 'unknown' WHEN 2 THEN 'suppressed' ELSE 'ok' END AS status,
       ROUND(AVG(value), 2) AS value,
       MIN(recordedAt) AS recordedAt
     FROM check_history
