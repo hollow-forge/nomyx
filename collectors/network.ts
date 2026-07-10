@@ -1,8 +1,9 @@
 // ── Network collectors ──────────────────────────────────────────────────────────
-// The first outbound collector: it doesn't read local state, it probes the network.
-// ping shells out to the stock ping binary via execFile (fixed argv, no shell) —
-// the probe confirmed ICMP works for the unprivileged agent account through
-// net.ipv4.ping_group_range (no setuid, no cap_net_raw, no native dependency).
+// Outbound collectors: they don't read local state, they probe the network.
+//   ping — shells out to the stock ping binary via execFile (fixed argv, no shell);
+//          the probe confirmed ICMP works for the unprivileged agent account through
+//          net.ipv4.ping_group_range (no setuid, no cap_net_raw, no native dep).
+//   port — pure Node net.createConnection TCP-connect check; spawns NOTHING (see below).
 //
 //   collectPing(check)              — platform seam; resolves the target, then pings
 //   resolveTarget(target)           — literal, or the "gateway"/"dns" sentinels
@@ -26,6 +27,7 @@
 // ping fails to resolve, never a shell command. Same discipline as service_active.
 
 import fs from "fs";
+import net from "net";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { toFiniteNumber, type Collector } from "./shared";
@@ -146,4 +148,76 @@ export function parseFirstIpv4Nameserver(raw: string): string {
     if (m && IPV4_RE.test(m[1])) return m[1];
   }
   throw new Error("collector ping: no IPv4 nameserver in /etc/resolv.conf (cannot resolve 'dns')");
+}
+
+// ── port ─────────────────────────────────────────────────────────────────────
+// TCP-connect presence check — 1 if something is listening on host:port, 0 if not.
+// Pure Node net.createConnection: NO subprocess, NO shell, and — unlike ping — this
+// spawns NOTHING. host/port are socket connection OPTIONS, not a command line, so
+// there is no injection surface at all (safer than ping's execFile). It's a single
+// connect with no data sent, then the socket is destroyed.
+//
+// Cross-platform: net.createConnection is identical on Linux and Windows, so there
+// is NO OS-backend seam and NO win32 throw here (contrast the /proc collectors,
+// whose reads are Linux-specific).
+//
+// DOWN-vs-INVALID (same framing as ping — the fault IS the signal):
+//   • 'connect' fires        → 1 (port open; presence threshold: thresholdDir "below",
+//                              warn/crit ~0.5, so 0 trips the port-closed fault)
+//   • refused / timeout /    → 0 — the port-closed / unreachable FAULT we monitor
+//     host-unreachable          for; a DETERMINED "not open", NOT invalid
+//   • host unresolvable /    → INVALID — couldn't even attempt (config/DNS error),
+//     bad config                distinct from a closed port
+// The error-code → outcome split lives in classifyConnectError (pure). A refused
+// connection MUST read 0/fault; a DNS failure MUST read invalid — they are not lumped.
+
+const PORT_TIMEOUT_MS = 3000;   // the connect timeout doubles as the down-threshold
+
+export async function collectPort(check: Collector<"port">): Promise<number> {
+  return tcpConnect(check.params.host, check.params.port);
+}
+
+// Thin async wrapper over the event-based socket API. The socket is destroyed on
+// EVERY path (connect, timeout, error) via done(), so no fd leaks and no lingering
+// connections. `settled` guards against a second event after we've resolved.
+function tcpConnect(host: string, port: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port, timeout: PORT_TIMEOUT_MS });
+    let settled = false;
+    const done = (act: () => void) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      act();
+    };
+    socket.once("connect", () => done(() => resolve(1)));   // listening — no data sent, close immediately
+    socket.once("timeout", () => done(() => resolve(0)));   // filtered / host down → closed fault
+    socket.once("error", (err: NodeJS.ErrnoException) =>
+      done(() => classifyConnectError(err.code) === "invalid"
+        ? reject(new Error(`collector port: cannot attempt ${host}:${port} (${err.code ?? err.message})`))
+        : resolve(0)),
+    );
+  });
+}
+
+// Pure: a connect error code → 0 (port-closed / unreachable FAULT — a determined
+// answer) or "invalid" (couldn't even attempt). Testable without opening a socket.
+//   ECONNREFUSED  nothing listening              → 0 (the classic closed-port signal)
+//   ETIMEDOUT     OS-level connect timeout       → 0
+//   EHOSTUNREACH/ENETUNREACH/EHOSTDOWN  no route → 0 (unreachable is a fault, not can't-tell)
+//   ECONNRESET    listener reset the handshake   → 0
+//   ENOTFOUND/EAI_AGAIN  DNS can't resolve host  → invalid (couldn't attempt)
+//   anything else (e.g. ERR_SOCKET_BAD_PORT)     → invalid (bad config)
+export function classifyConnectError(code: string | undefined): 0 | "invalid" {
+  switch (code) {
+    case "ECONNREFUSED":
+    case "ETIMEDOUT":
+    case "EHOSTUNREACH":
+    case "ENETUNREACH":
+    case "EHOSTDOWN":
+    case "ECONNRESET":
+      return 0;
+    default:
+      return "invalid";
+  }
 }

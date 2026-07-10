@@ -28,7 +28,7 @@ import {
 } from "./fileread";
 import { collectCpu } from "./cpu";
 import { collectServiceActive } from "./subprocess";
-import { collectPing } from "./network";
+import { collectPing, collectPort } from "./network";
 
 // Re-export the pure parse/compute functions so consumers (agent.ts and the
 // verification harnesses) keep importing them from "./collectors" unchanged after
@@ -40,7 +40,7 @@ export {
 } from "./fileread";
 export { parseStatCpu, cpuPctFromDeltas } from "./cpu";
 export { interpretIsActive } from "./subprocess";
-export { parseGatewayFromRoute, parseFirstIpv4Nameserver, parsePingRtt } from "./network";
+export { parseGatewayFromRoute, parseFirstIpv4Nameserver, parsePingRtt, classifyConnectError } from "./network";
 
 // ── Dispatch ───────────────────────────────────────────────────────────────────
 // Exhaustive over the builtin union: every collector `type` is handled, and the
@@ -91,12 +91,15 @@ export async function runBuiltin(check: BuiltinCheck): Promise<CheckValue> {
         // execFile('ping', ['-c','1','-W',…, target]) — RTT ms; no-reply → 9999 (fault
         // via threshold), unresolvable sentinel / can't-run → "invalid" (see network.ts).
         return numeric(check, await collectPing(check));
+      case "port":
+        // Pure Node net.createConnection — 1 open / 0 closed-or-timeout (fault);
+        // unresolvable host / bad config → "invalid" (see network.ts). No subprocess.
+        return numeric(check, await collectPort(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
       case "file":
       case "http":
-      case "port":
         throw new Error(`collector ${check.type}: not yet implemented`);
 
       default:
