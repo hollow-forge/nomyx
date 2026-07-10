@@ -4,6 +4,7 @@
 //          the probe confirmed ICMP works for the unprivileged agent account through
 //          net.ipv4.ping_group_range (no setuid, no cap_net_raw, no native dep).
 //   port — pure Node net.createConnection TCP-connect check; spawns NOTHING (see below).
+//   http — pure Node http/https GET; status-match check, strict TLS; spawns NOTHING.
 //
 //   collectPing(check)              — platform seam; resolves the target, then pings
 //   resolveTarget(target)           — literal, or the "gateway"/"dns" sentinels
@@ -28,6 +29,8 @@
 
 import fs from "fs";
 import net from "net";
+import http from "http";
+import https from "https";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { toFiniteNumber, type Collector } from "./shared";
@@ -219,5 +222,94 @@ export function classifyConnectError(code: string | undefined): 0 | "invalid" {
       return 0;
     default:
       return "invalid";
+  }
+}
+
+// ── http ─────────────────────────────────────────────────────────────────────
+// HTTP(S) status-match check — 1 if the response status equals params.expect_status
+// (default 200), else 0. Pure Node http/https GET: NO subprocess, spawns nothing; the
+// URL is a request option, not a command line — no injection surface. Cross-platform,
+// so no OS seam / no win32 throw (like port).
+//
+// LOCKED DECISIONS:
+//   • Status-MATCH, not 2xx-ish: status === expect_status → 1, anything else → 0. A
+//     301/302 when expecting 200 is a real, surfaced event → 0.
+//   • DON'T FOLLOW REDIRECTS: we check the ACTUAL response status. Node's http.get does
+//     not auto-follow, and we add no redirect logic — a 301 stays 301 → 0.
+//   • STRICT TLS: rejectUnauthorized is left at its secure default. An expired /
+//     self-signed / wrong-host cert makes the request error → 0 (fault). We NEVER set
+//     rejectUnauthorized:false. (Cert-expiry-DAYS warning is separate deferred work.)
+//
+// DOWN-vs-INVALID (same framing as ping/port):
+//   • status == expect_status                         → 1 (OK)
+//   • status != expect_status (incl. unfollowed 3xx)  → 0 (answered-but-unhealthy fault)
+//   • refused / timeout / TLS cert rejected / unreachable → 0 (endpoint down or TLS
+//                                                     broken — the FAULT we monitor)
+//   • malformed URL / non-http(s) scheme / DNS-unresolvable → INVALID (couldn't attempt)
+// The status-match is trivially pure; the error → 0|invalid split is classifyHttpError.
+
+const HTTP_TIMEOUT_MS = 5000;   // request timeout — part of the down signal
+
+export async function collectHttp(check: Collector<"http">): Promise<number> {
+  return httpProbe(check.params.url, check.params.expect_status);
+}
+
+function httpProbe(rawUrl: string, expectStatus: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      reject(new Error(`collector http: malformed URL ${JSON.stringify(rawUrl)}`));
+      return;
+    }
+    // Scheme allowlist — only http/https reach the network. file:/ftp:/… → invalid
+    // (a determined config error, never attempted).
+    const mod = url.protocol === "https:" ? https : url.protocol === "http:" ? http : null;
+    if (!mod) {
+      reject(new Error(`collector http: unsupported URL scheme ${JSON.stringify(url.protocol)} (only http/https)`));
+      return;
+    }
+
+    let settled = false;
+    // agent:false → a one-off socket that closes after the response (no pooled
+    // keep-alive handle lingering to hold the event loop open). Strict TLS: no
+    // rejectUnauthorized override, so a bad cert errors out below.
+    const req = mod.get(url, { timeout: HTTP_TIMEOUT_MS, agent: false }, (res) => {
+      const status = res.statusCode ?? 0;
+      res.resume();   // drain & discard the body — we only need the status; frees the socket
+      if (settled) return;
+      settled = true;
+      resolve(status === expectStatus ? 1 : 0);   // match → 1, mismatch → 0 (fault)
+    });
+    req.once("timeout", () => {
+      if (settled) return;
+      settled = true;
+      req.destroy();   // slow/hung endpoint → fault; destroy so no fd lingers
+      resolve(0);
+    });
+    req.once("error", (err: NodeJS.ErrnoException) => {
+      if (settled) return;
+      settled = true;
+      classifyHttpError(err.code) === "invalid"
+        ? reject(new Error(`collector http: cannot attempt ${rawUrl} (${err.code ?? err.message})`))
+        : resolve(0);
+    });
+  });
+}
+
+// Pure: an http request error code → 0 (fault) or "invalid" (couldn't attempt). This
+// INVERTS classifyConnectError's default: for HTTP, a TLS/cert error (CERT_HAS_EXPIRED,
+// DEPTH_ZERO_SELF_SIGNED_CERT, ERR_TLS_CERT_ALTNAME_INVALID, …) is a REAL endpoint
+// fault → 0, as is refused/timeout/unreachable. ONLY a DNS-resolution failure means we
+// never reached anything → invalid. (Malformed URL / bad scheme are rejected before the
+// request is made, so they don't pass through here.)
+export function classifyHttpError(code: string | undefined): 0 | "invalid" {
+  switch (code) {
+    case "ENOTFOUND":
+    case "EAI_AGAIN":
+      return "invalid";
+    default:
+      return 0;   // connection refused / timeout / TLS cert rejected / unreachable → fault
   }
 }

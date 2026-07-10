@@ -28,7 +28,7 @@ import {
 } from "./fileread";
 import { collectCpu } from "./cpu";
 import { collectServiceActive } from "./subprocess";
-import { collectPing, collectPort } from "./network";
+import { collectPing, collectPort, collectHttp } from "./network";
 
 // Re-export the pure parse/compute functions so consumers (agent.ts and the
 // verification harnesses) keep importing them from "./collectors" unchanged after
@@ -40,7 +40,7 @@ export {
 } from "./fileread";
 export { parseStatCpu, cpuPctFromDeltas } from "./cpu";
 export { interpretIsActive } from "./subprocess";
-export { parseGatewayFromRoute, parseFirstIpv4Nameserver, parsePingRtt, classifyConnectError } from "./network";
+export { parseGatewayFromRoute, parseFirstIpv4Nameserver, parsePingRtt, classifyConnectError, classifyHttpError } from "./network";
 
 // ── Dispatch ───────────────────────────────────────────────────────────────────
 // Exhaustive over the builtin union: every collector `type` is handled, and the
@@ -95,11 +95,14 @@ export async function runBuiltin(check: BuiltinCheck): Promise<CheckValue> {
         // Pure Node net.createConnection — 1 open / 0 closed-or-timeout (fault);
         // unresolvable host / bad config → "invalid" (see network.ts). No subprocess.
         return numeric(check, await collectPort(check));
-
-      // Recognized collectors, not built yet — they follow one at a time. Fail
-      // loud (never a stub number) until each is implemented.
-      case "file":
       case "http":
+        // Pure Node http/https GET — 1 if status == expect_status, else 0 (mismatch/
+        // down/bad-TLS fault); malformed URL / bad scheme / DNS-fail → "invalid".
+        return numeric(check, await collectHttp(check));
+
+      // The last recognized collector still to build. Fail loud (never a stub
+      // number) until it is implemented.
+      case "file":
         throw new Error(`collector ${check.type}: not yet implemented`);
 
       default:
