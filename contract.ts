@@ -113,6 +113,8 @@ const ProcsCheckSchema = z.object({         // process presence/count (Xymon PRO
     name: z.string().min(1),                          // process name/pattern to match
     min:  z.coerce.number().int().default(1),         // count below this => breach
     max:  z.coerce.number().int().default(-1),        // -1 = unlimited
+    match: z.enum(["exact", "substring"]).default("exact"), // exact: command name == name (correct-by-default);
+                                                            // substring: name contained in it (Xymon parity)
   }),
 });
 const ServiceActiveCheckSchema = z.object({ // systemd unit active => 1/0
