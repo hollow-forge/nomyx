@@ -31,6 +31,7 @@ const statusColor: Record<string, string> = {
   ok:         "#4ade80",
   warn:       "#f59e0b",
   crit:       "#f87171",
+  invalid:    "#f97316",   // orange — "heard, but couldn't measure" (distinct from warn amber)
   unknown:    "#a855f7",
   suppressed: "#60a5fa",
 };
@@ -44,13 +45,14 @@ const rangeLabels: Record<string, string> = {
   "1y":  "Last 12 months",
 };
 
-const STATUSES = ["ok", "warn", "crit", "unknown", "suppressed"];
+const STATUSES = ["ok", "warn", "crit", "invalid", "unknown", "suppressed"];
 
-// Worst-status-wins ranking, mirroring the server rollup: when several points
-// collapse into one bucket, the bucket takes the most severe status so the line
-// still turns red/amber wherever anything went wrong.
-const STATUS_RANK: Record<string, number> = { crit: 5, warn: 4, unknown: 3, suppressed: 2, ok: 1 };
-const RANK_STATUS: Record<number, string> = { 5: "crit", 4: "warn", 3: "unknown", 2: "suppressed", 1: "ok" };
+// Worst-status-wins ranking, mirroring the server rollup (crit > invalid > warn >
+// unknown > suppressed > ok): when several points collapse into one bucket, the bucket
+// takes the most severe status so the line still turns red/orange/amber wherever
+// anything went wrong — and invalid is no longer re-collapsed to unknown here.
+const STATUS_RANK: Record<string, number> = { crit: 6, invalid: 5, warn: 4, unknown: 3, suppressed: 2, ok: 1 };
+const RANK_STATUS: Record<number, string> = { 6: "crit", 5: "invalid", 4: "warn", 3: "unknown", 2: "suppressed", 1: "ok" };
 
 // Target points per range. The aggregate ranges are deliberately coarser so they
 // read as calm as the 24h view instead of a dense spiky band.

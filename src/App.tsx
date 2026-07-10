@@ -475,7 +475,7 @@ function HostDetail({ host, user, onBack, onRemoved }: { host: HostRecord; user:
                     onClick={() => navigate(`/history/${encodeURIComponent(host.hostname)}/${encodeURIComponent(check.name)}`)}>
                     <td className="check-table-name">{check.name}</td>
                     <td className="check-table-value">
-                      <span className={`color-${status === "ok" ? "ok" : status === "warn" ? "warn" : status === "crit" ? "crit" : status === "suppressed" ? "suppressed" : "default"}`}>
+                      <span className={`color-${status === "ok" ? "ok" : status === "warn" ? "warn" : status === "crit" ? "crit" : status === "invalid" ? "invalid" : status === "suppressed" ? "suppressed" : "default"}`}>
                         {String(check.value)}
                         {check.unit !== "string" && <span className="check-unit"> {check.unit}</span>}
                       </span>
@@ -586,6 +586,7 @@ function Dashboard({ user, setUser }: { user: any; setUser: (u: any) => void }) 
     nonGreen:   hosts.filter(h => h.status !== "ok" && h.status !== "suppressed").length,
     ok:         hosts.filter(h => h.status === "ok").length,
     warn:       hosts.filter(h => h.status === "warn").length,
+    invalid:    hosts.filter(h => h.status === "invalid").length,
     crit:       hosts.filter(h => h.status === "crit").length,
     unknown:    hosts.filter(h => h.status === "unknown").length,
     suppressed: hosts.filter(h => h.status === "suppressed").length,
@@ -595,6 +596,7 @@ function Dashboard({ user, setUser }: { user: any; setUser: (u: any) => void }) 
     if (cardFilter === "nongreen")   return h.status !== "ok" && h.status !== "suppressed";
     if (cardFilter === "ok")         return h.status === "ok";
     if (cardFilter === "warn")       return h.status === "warn";
+    if (cardFilter === "invalid")    return h.status === "invalid";
     if (cardFilter === "crit")       return h.status === "crit";
     if (cardFilter === "unknown")    return h.status === "unknown";
     if (cardFilter === "suppressed") return h.status === "suppressed";
@@ -614,6 +616,7 @@ function Dashboard({ user, setUser }: { user: any; setUser: (u: any) => void }) 
           { label: "Non-green",  value: counts.nonGreen,   color: "color-crit",       filter: "nongreen"   },
           { label: "Healthy",    value: counts.ok,          color: "color-ok",         filter: "ok"         },
           { label: "Warning",    value: counts.warn,        color: "color-warn",       filter: "warn"       },
+          { label: "Invalid",    value: counts.invalid,     color: "color-invalid",    filter: "invalid"    },
           { label: "Critical",   value: counts.crit,        color: "color-crit",       filter: "crit"       },
           { label: "Unknown",    value: counts.unknown,     color: "color-unknown",    filter: "unknown"    },
           { label: "Suppressed", value: counts.suppressed,  color: "color-suppressed", filter: "suppressed" },
@@ -706,6 +709,7 @@ function NocView({ user, setUser }: { user: any; setUser: (u: any) => void }) {
   const counts = {
     nonGreen:   hosts.filter(h => h.status !== "ok" && h.status !== "suppressed").length,
     crit:       hosts.filter(h => h.status === "crit").length,
+    invalid:    hosts.filter(h => h.status === "invalid").length,
     warn:       hosts.filter(h => h.status === "warn").length,
     unknown:    hosts.filter(h => h.status === "unknown").length,
     suppressed: hosts.filter(h => h.status === "suppressed").length,
@@ -715,6 +719,7 @@ function NocView({ user, setUser }: { user: any; setUser: (u: any) => void }) {
   const sorted = sortWorstFirst(hosts).filter(h => {
     if (cardFilter === "nongreen")   return h.status !== "ok" && h.status !== "suppressed";
     if (cardFilter === "crit")       return h.status === "crit";
+    if (cardFilter === "invalid")    return h.status === "invalid";
     if (cardFilter === "warn")       return h.status === "warn";
     if (cardFilter === "unknown")    return h.status === "unknown";
     if (cardFilter === "suppressed") return h.status === "suppressed";
@@ -724,6 +729,7 @@ function NocView({ user, setUser }: { user: any; setUser: (u: any) => void }) {
 
   const rowStyle = (status: string) => {
     if (status === "crit")       return { borderLeft: "3px solid #7f1d1d", background: "rgba(248,113,113,0.04)" };
+    if (status === "invalid")    return { borderLeft: "3px solid #9a3412", background: "rgba(249,115,22,0.04)"  };
     if (status === "warn")       return { borderLeft: "3px solid #854d0e", background: "rgba(245,158,11,0.04)"  };
     if (status === "unknown")    return { borderLeft: "3px solid #6b21a8", background: "rgba(168,85,247,0.04)"  };
     if (status === "suppressed") return { borderLeft: "3px solid #1e3a5f", background: "rgba(96,165,250,0.04)"  };
@@ -742,6 +748,7 @@ function NocView({ user, setUser }: { user: any; setUser: (u: any) => void }) {
         {[
           { label: "Non-green",  value: counts.nonGreen,   color: "color-crit",       filter: "nongreen"   },
           { label: "Critical",   value: counts.crit,        color: "color-crit",       filter: "crit"       },
+          { label: "Invalid",    value: counts.invalid,     color: "color-invalid",    filter: "invalid"    },
           { label: "Warning",    value: counts.warn,        color: "color-warn",       filter: "warn"       },
           { label: "Unknown",    value: counts.unknown,     color: "color-unknown",    filter: "unknown"    },
           { label: "Suppressed", value: counts.suppressed,  color: "color-suppressed", filter: "suppressed" },

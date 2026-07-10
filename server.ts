@@ -1502,6 +1502,7 @@ async function sendTeamsAlert(evt: AlertEvent, isTest = false): Promise<void> {
 
   const statusColor: Record<string, string> = {
     crit:       "FF4444",
+    invalid:    "F97316",   // orange — was falling back to gray "888888"
     warn:       "F59E0B",
     ok:         "4ADE80",
     unknown:    "A855F7",
