@@ -195,6 +195,7 @@ db.exec(`
     ('alert_teams_webhook',  ''),
     ('alert_on_crit',        '1'),
     ('alert_on_unknown',     '1'),
+    ('alert_on_invalid',     '1'),
     ('alert_on_recovery',    '1'),
     ('alert_on_warn',        '0');
 
@@ -835,7 +836,7 @@ app.get("/api/settings", requireAuth, requireAdmin, (_req, res) => {
 });
 
 app.post("/api/settings", requireAuth, requireAdmin, (req, res) => {
-  const allowed = ["raw_retention_days", "fivemin_retention_days", "hourly_retention_days", "daily_retention_years", "event_log_retention_days", "ldap_sync_interval_minutes", "ldap_sync_enabled", "alert_email_enabled", "alert_email_to", "alert_email_from", "alert_smtp_host", "alert_smtp_port", "alert_teams_enabled", "alert_teams_webhook", "alert_on_crit", "alert_on_unknown", "alert_on_recovery", "alert_on_warn"];
+  const allowed = ["raw_retention_days", "fivemin_retention_days", "hourly_retention_days", "daily_retention_years", "event_log_retention_days", "ldap_sync_interval_minutes", "ldap_sync_enabled", "alert_email_enabled", "alert_email_to", "alert_email_from", "alert_smtp_host", "alert_smtp_port", "alert_teams_enabled", "alert_teams_webhook", "alert_on_crit", "alert_on_unknown", "alert_on_invalid", "alert_on_recovery", "alert_on_warn"];
   const changed: string[] = [];
   for (const key of allowed) {
     if (req.body[key] !== undefined) {
@@ -1490,7 +1491,7 @@ async function sendEmailAlert(evt: AlertEvent, isTest = false): Promise<void> {
 
   const text = isTest
     ? "This is a test alert from Nomyx. Email alerting is configured correctly."
-    : `Host: ${evt.hostname}\nCheck: ${evt.checkName}\nStatus change: ${evt.fromStatus} → ${evt.toStatus}${evt.value !== null ? `\nValue: ${evt.value}` : ""}\nTime: ${new Date().toLocaleString()}`;
+    : `Host: ${evt.hostname}\nCheck: ${evt.checkName}\nStatus change: ${evt.fromStatus} → ${evt.toStatus}${evt.value !== null ? `\nValue: ${evt.value}` : ""}${evt.toStatus === "invalid" ? "\nNote: the agent could not measure this check (no valid reading)." : ""}\nTime: ${new Date().toLocaleString()}`;
 
   await transporter.sendMail({ from, to, subject, text });
   console.log(`[alert] Email sent to ${to} — ${subject}`);
@@ -1513,7 +1514,7 @@ async function sendTeamsAlert(evt: AlertEvent, isTest = false): Promise<void> {
   const title = isTest ? "Nomyx Test Alert" : `${evt.hostname} — ${evt.checkName} is ${evt.toStatus.toUpperCase()}`;
   const text  = isTest
     ? "This is a test alert from Nomyx. Teams alerting is configured correctly."
-    : `**Status change:** ${evt.fromStatus} → ${evt.toStatus}${evt.value !== null ? `  \n**Value:** ${evt.value}` : ""}  \n**Time:** ${new Date().toLocaleString()}`;
+    : `**Status change:** ${evt.fromStatus} → ${evt.toStatus}${evt.value !== null ? `  \n**Value:** ${evt.value}` : ""}${evt.toStatus === "invalid" ? "  \n**Note:** the agent could not measure this check (no valid reading)." : ""}  \n**Time:** ${new Date().toLocaleString()}`;
 
   const body = {
     "@type":      "MessageCard",
@@ -1540,8 +1541,10 @@ async function sendAlert(evt: AlertEvent, isTest = false): Promise<void> {
 
 function shouldAlert(fromStatus: string, toStatus: string): boolean {
   if (toStatus === "crit"    && getStr("alert_on_crit")     === "1") return true;
+  if (toStatus === "invalid" && getStr("alert_on_invalid")  === "1") return true;
   if (toStatus === "unknown" && getStr("alert_on_unknown")  === "1") return true;
   if (toStatus === "warn"    && getStr("alert_on_warn")     === "1") return true;
+  // Recovery: any non-ok state (crit / invalid / unknown / warn) returning to ok.
   if (toStatus === "ok" && fromStatus !== "ok" && getStr("alert_on_recovery") === "1") return true;
   return false;
 }
