@@ -17,7 +17,7 @@ RUN npm run build
 
 # Fetch the prebuilt agent binaries from the GitHub release into ./agent so the
 # server can offer them as admin-only downloads. Bump AGENT_VERSION per release.
-ARG AGENT_VERSION=v0.1.3
+ARG AGENT_VERSION=v0.2.0
 RUN mkdir -p agent && cd agent \
  && BASE="https://github.com/hollow-forge/nomyx/releases/download/${AGENT_VERSION}" \
  && curl -fL -O "${BASE}/nomyx-agent-win-x64.exe" \
