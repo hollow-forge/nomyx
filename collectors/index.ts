@@ -23,7 +23,7 @@
 import type { BuiltinCheck, CheckValue } from "../contract";
 import {
   collectLoad, collectMemory, collectSwap, collectDisk,
-  collectInodes, collectUptime, collectTemperature,
+  collectInodes, collectUptime, collectTemperature, collectProcs,
 } from "./fileread";
 import { collectCpu } from "./cpu";
 import { collectServiceActive } from "./subprocess";
@@ -34,6 +34,7 @@ import { collectServiceActive } from "./subprocess";
 export {
   parseLoadavg, parseMeminfoUsedPct, parseMeminfoSwapPct,
   parseUptimeSeconds, parseMilliCelsius, statfsUsedPct, statfsInodesPct,
+  countMatches,
 } from "./fileread";
 export { parseStatCpu, cpuPctFromDeltas } from "./cpu";
 export { interpretIsActive } from "./subprocess";
@@ -78,10 +79,13 @@ export async function runBuiltin(check: BuiltinCheck): Promise<CheckValue> {
         // execFile('systemctl', ['is-active', unit]) — 1 active / 0 down; a check
         // that cannot be determined throws → "invalid" (see subprocess.ts).
         return numeric(check, await collectServiceActive(check));
+      case "procs":
+        // Native /proc scan → count of matching processes; count 0 is a real answer
+        // (process absent), only an unreadable /proc throws → "invalid".
+        return numeric(check, await collectProcs(check));
 
       // Recognized collectors, not built yet — they follow one at a time. Fail
       // loud (never a stub number) until each is implemented.
-      case "procs":
       case "file":
       case "ping":
       case "http":

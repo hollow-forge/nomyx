@@ -1,7 +1,8 @@
 // ── File-read collectors ───────────────────────────────────────────────────────
-// The 7 collectors that read the OS directly with no subprocess — /proc, /sys, and
-// the statfs syscall: load, memory, swap, disk, inodes, uptime, temperature. Each
-// follows the same shape:
+// The collectors that read the OS directly with no subprocess — /proc, /sys, and
+// the statfs syscall: load, memory, swap, disk, inodes, uptime, temperature, procs.
+// (procs is a /proc directory SCAN rather than a single read, but still native —
+// readdir + per-PID comm reads, no ps/grep/shell.) Each follows the same shape:
 //   collectX(check)  — selects the platform backend (Linux impl / Windows throws)
 //   xLinux()         — does the Linux read
 //   parseX(raw)      — the pure parse/compute, split out so it can be exercised
@@ -277,4 +278,76 @@ function temperatureLinux(zone: string): number {
 // emitting 0°C (Number("") is 0, a plausible-wrong reading).
 export function parseMilliCelsius(raw: string): number {
   return toFiniteNumber(raw.trim(), "temperature temp") / 1000;
+}
+
+// ── procs ────────────────────────────────────────────────────────────────────
+// Count of running processes matching params.name — the presence/count signal
+// (Xymon PROC). NATIVE /proc scan, NO subprocess: iterate the numeric PID dirs
+// under /proc and read each /proc/<pid>/comm (the kernel's command name, one line).
+// This replaces the classic `ps -e | grep X | grep -v grep | wc -l` pipeline and
+// its fragility (grep matching itself, argument-vs-comm confusion, shell quoting).
+//
+// MATCH MODES (params.match, default "exact" — see countMatches for the logic):
+//   exact:     comm equals name (kernel-truncation-aware — see below)
+//   substring: comm contains name (Xymon parity, opt-in)
+//
+// COUNT 0 vs INVALID (mirrors service_active's down-vs-invalid):
+//   A count of 0 — no process matches — is a REAL, DETERMINED answer ("it isn't
+//   running"), NOT an error. It is emitted as 0 and, with a presence threshold
+//   (thresholdDir "below", warn/crit around 0.5), trips the process-absent fault —
+//   exactly like a legitimately-absent process should alert. "invalid" is reserved
+//   for the scan ITSELF failing to determine a count: /proc unreadable/absent makes
+//   readdirSync throw → the dispatch returns "invalid". A not-running process must
+//   never read as invalid; an unreadable /proc must never read as count 0.
+//
+// The emitted value is the raw count. A presence check (min:1) is expressed with
+// the existing single-direction threshold (count < 1 → fault). params.min/max carry
+// the Xymon intent but a two-sided (min AND max) alert needs the same DEFERRED
+// two-sided-threshold model as uptime's up-too-long — not consumed here.
+
+export function collectProcs(check: Collector<"procs">): number {
+  if (process.platform === "win32") {
+    throw new Error("collector procs: Windows backend not yet implemented");
+  }
+  return countMatches(readProcComms(), check.params.name, check.params.match);
+}
+
+// The live scan, split from the pure matching so countMatches stays verifiable
+// against a captured comm list. Reading /proc itself failing (unreadable/absent) is
+// the ONLY invalid condition and propagates as a throw. A per-PID read failing is
+// NOT: between listing /proc and reading a PID's comm, that process can exit, so the
+// read throws ENOENT — normal churn, skipped (never counted, never fatal).
+function readProcComms(): string[] {
+  const entries = fs.readdirSync("/proc");   // throws if /proc is unreadable → invalid
+  const comms: string[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;      // numeric PID dirs only (skip acpi, net, …)
+    let raw: string;
+    try {
+      raw = fs.readFileSync(`/proc/${entry}/comm`, "utf-8");
+    } catch {
+      continue;                              // PID vanished mid-scan (exited) — expected, skip
+    }
+    comms.push(raw.replace(/\n$/, ""));      // comm is "<name>\n" — drop the single trailing newline
+  }
+  return comms;
+}
+
+// Pure matcher — exercised against a captured comm list (see the verification
+// harness), no live /proc needed.
+//
+// KERNEL COMM TRUNCATION (TASK_COMM_LEN): /proc/<pid>/comm is truncated to 15 chars,
+// so "systemd-journald" (16) appears as "systemd-journal" (15). For EXACT match we
+// therefore compare comm against name CLAMPED to 15 chars — otherwise a name longer
+// than 15 chars would silently never match any comm. (name ≤ 15 → clamp is a no-op,
+// so short names are unaffected.) SUBSTRING is left as raw containment: a needle
+// > 15 chars can never be inside a ≤15-char comm — a documented limitation, NOT
+// "fixed" by clamping the needle (which would risk false positives against an
+// unrelated process whose truncated comm happens to share the first 15 chars).
+export function countMatches(comms: string[], name: string, match: "exact" | "substring"): number {
+  if (match === "substring") {
+    return comms.filter((c) => c.includes(name)).length;
+  }
+  const needle = name.slice(0, 15);          // truncation-aware exact comparison
+  return comms.filter((c) => c === needle).length;
 }
